@@ -24,6 +24,7 @@
     .print-root table { width: 100% !important; }
     .print-root td, .print-root th { font-size: 10px !important; padding: 2px 8px 2px 0 !important; }
     .print-params-block { display: block !important; }
+    .sat-print-show { display: block !important; }
     @page { margin: 0.5in; size: letter; }
   }
   .print-params-block { display: none; }
@@ -89,22 +90,21 @@ function App() {
   const [withdrawalInput, setWithdrawalInput] = useState("0");
   const [setAsideInput, setSetAsideInput] = useState("0");
   const [allocs, setAllocs] = useState(DEFAULT_ALLOCS.map(a => a.pct));
+  const [showSatellites, setShowSatellites] = useState(false);
+  const [satCount, setSatCount] = useState("3");
+  const [satFunding, setSatFunding] = useState("5000000");
+  const [satTriggerYear, setSatTriggerYear] = useState("20");
+  const [satGrowthRate, setSatGrowthRate] = useState("7");
 
   const totalAlloc = allocs.reduce((s, v) => s + v, 0);
-
-  const handleSlider = useCallback((index, newVal) => {
-    setAllocs(prev => { const u = [...prev]; u[index] = newVal; return u; });
-  }, []);
-
+  const handleSlider = useCallback((index, newVal) => { setAllocs(prev => { const u = [...prev]; u[index] = newVal; return u; }); }, []);
   const resetAllocs = useCallback(() => { setAllocs(DEFAULT_ALLOCS.map(a => a.pct)); }, []);
 
   const calc = useMemo(() => {
     const isLottery = mode === "lottery";
     const allocations = DEFAULT_ALLOCS.map((a, i) => ({ ...a, pct: allocs[i] / 100 }));
-
     let jackpot = 0, cash = 0, cashRatioActual = 0, ratioFlag = false;
     let fedWithholding = 0, fedActual = 0, fedOwedAtFiling = 0, arTax = 0, totalTax = 0, net = 0;
-
     if (isLottery) {
       jackpot = parseFloat(jackpotInput) || 0;
       const defaultCash = jackpot * DEFAULTS.cashRatio;
@@ -117,63 +117,40 @@ function App() {
       arTax = cash * DEFAULTS.arStateRate;
       totalTax = fedActual + arTax;
       net = cash - totalTax;
-    } else {
-      net = parseFloat(lumpSumInput) || 0;
-    }
-
+    } else { net = parseFloat(lumpSumInput) || 0; }
     const setAside = parseFloat(setAsideInput) || 0;
     const investable = Math.max(net - setAside, 0);
-
     const buckets = allocations.map((a) => {
       const invested = investable * a.pct;
       const grossIncome = invested * a.yield;
       let fedTax, stateTax, afterTax;
-      if (a.type === "qualified") {
-        const rate = DEFAULTS.qualDivRate + DEFAULTS.niit;
-        fedTax = grossIncome * rate;
-        stateTax = grossIncome * DEFAULTS.arStateRate;
-        afterTax = grossIncome - fedTax - stateTax;
-      } else if (a.type === "tbill") {
-        fedTax = grossIncome * DEFAULTS.fedTopRate;
-        stateTax = 0;
-        afterTax = grossIncome - fedTax;
-      } else {
-        fedTax = grossIncome * DEFAULTS.fedTopRate;
-        stateTax = grossIncome * DEFAULTS.arStateRate;
-        afterTax = grossIncome - fedTax - stateTax;
-      }
+      if (a.type === "qualified") { const rate = DEFAULTS.qualDivRate + DEFAULTS.niit; fedTax = grossIncome * rate; stateTax = grossIncome * DEFAULTS.arStateRate; afterTax = grossIncome - fedTax - stateTax; }
+      else if (a.type === "tbill") { fedTax = grossIncome * DEFAULTS.fedTopRate; stateTax = 0; afterTax = grossIncome - fedTax; }
+      else { fedTax = grossIncome * DEFAULTS.fedTopRate; stateTax = grossIncome * DEFAULTS.arStateRate; afterTax = grossIncome - fedTax - stateTax; }
       return { ...a, invested, grossIncome, fedTax, stateTax, afterTax };
     });
-
     const qualBuckets = buckets.filter((b) => b.type === "qualified");
     const intBuckets = buckets.filter((b) => b.type !== "qualified");
     const qualAfterTax = qualBuckets.reduce((s, b) => s + b.afterTax, 0);
     const intAfterTax = intBuckets.reduce((s, b) => s + b.afterTax, 0);
     const totalAfterTax = qualAfterTax + intAfterTax;
-
     const grossDivAndInt = buckets.reduce((s, b) => s + b.grossIncome, 0);
     const growthBucketsForReturn = buckets.filter((b) => b.grows);
     const yr1GrowthPrincipal = growthBucketsForReturn.reduce((s, b) => s + b.invested, 0);
     const yr1CapitalGrowth = yr1GrowthPrincipal * DEFAULTS.growthRate;
     const yr1TotalGrossReturn = yr1CapitalGrowth + grossDivAndInt;
     const passiveIncomeAsPercent = yr1TotalGrossReturn > 0 ? totalAfterTax / yr1TotalGrossReturn : 0;
-
     const annualWithdrawal = parseFloat(withdrawalInput) || 0;
     const growthBuckets = buckets.filter((b) => b.grows);
     const startingGrowthPrincipal = growthBuckets.reduce((s, b) => s + b.invested, 0);
     const incomeBuckets = buckets.filter((b) => !b.grows);
     const startingIncomePool = incomeBuckets.reduce((s, b) => s + b.invested, 0);
-
-    const incomePoolAfterTaxYield = startingIncomePool > 0
-      ? incomeBuckets.reduce((s, b) => s + b.afterTax, 0) / startingIncomePool : 0;
-    const growthBucketDivYield = startingGrowthPrincipal > 0
-      ? growthBuckets.reduce((s, b) => s + b.afterTax, 0) / startingGrowthPrincipal : 0;
-
+    const incomePoolAfterTaxYield = startingIncomePool > 0 ? incomeBuckets.reduce((s, b) => s + b.afterTax, 0) / startingIncomePool : 0;
+    const growthBucketDivYield = startingGrowthPrincipal > 0 ? growthBuckets.reduce((s, b) => s + b.afterTax, 0) / startingGrowthPrincipal : 0;
     const compoundTable = [];
     let growthPrincipal = startingGrowthPrincipal;
     let incomePool = startingIncomePool;
     let totalWithdrawnCumulative = 0;
-
     for (let yr = 1; yr <= 50; yr++) {
       const growthGain = growthPrincipal * DEFAULTS.growthRate;
       growthPrincipal = growthPrincipal + growthGain;
@@ -181,37 +158,33 @@ function App() {
       const growthPoolDividends = growthPrincipal * growthBucketDivYield;
       const totalPassiveIncome = incomePoolIncome + growthPoolDividends;
       const leftover = totalPassiveIncome - annualWithdrawal;
-      if (leftover >= 0) { incomePool = incomePool + leftover; }
-      else { growthPrincipal = growthPrincipal + leftover; }
+      if (leftover >= 0) { incomePool = incomePool + leftover; } else { growthPrincipal = growthPrincipal + leftover; }
       if (growthPrincipal < 0) growthPrincipal = 0;
       totalWithdrawnCumulative += annualWithdrawal;
-      if (DEFAULTS.milestones.includes(yr)) {
-        const totalPortfolio = growthPrincipal + incomePool;
-        compoundTable.push({ year: yr, growthPool: growthPrincipal, incomePool, totalPortfolio, totalWithdrawn: totalWithdrawnCumulative, yrPassiveIncome: totalPassiveIncome });
-      }
+      if (DEFAULTS.milestones.includes(yr)) { compoundTable.push({ year: yr, growthPool: growthPrincipal, incomePool, totalPortfolio: growthPrincipal + incomePool, totalWithdrawn: totalWithdrawnCumulative, yrPassiveIncome: totalPassiveIncome }); }
     }
-
     const withdrawalPctOfGross = yr1TotalGrossReturn > 0 ? annualWithdrawal / yr1TotalGrossReturn : 0;
     const withdrawalPctOfNet = totalAfterTax > 0 ? annualWithdrawal / totalAfterTax : 0;
     const withdrawalPctOfPrincipal = investable > 0 ? annualWithdrawal / investable : 0;
-
-    return {
-      isLottery, jackpot, cash, cashRatioActual, ratioFlag,
-      fedWithholding, fedActual, fedOwedAtFiling, arTax, totalTax, net,
-      setAside, investable, allocations,
-      buckets, qualAfterTax, intAfterTax, totalAfterTax,
-      grossDivAndInt, yr1CapitalGrowth, yr1TotalGrossReturn, passiveIncomeAsPercent,
-      startingGrowthPrincipal, startingIncomePool, annualWithdrawal, compoundTable,
-      withdrawalPctOfGross, withdrawalPctOfNet, withdrawalPctOfPrincipal,
-    };
+    return { isLottery, jackpot, cash, cashRatioActual, ratioFlag, fedWithholding, fedActual, fedOwedAtFiling, arTax, totalTax, net, setAside, investable, allocations, buckets, qualAfterTax, intAfterTax, totalAfterTax, grossDivAndInt, yr1CapitalGrowth, yr1TotalGrossReturn, passiveIncomeAsPercent, startingGrowthPrincipal, startingIncomePool, annualWithdrawal, compoundTable, withdrawalPctOfGross, withdrawalPctOfNet, withdrawalPctOfPrincipal };
   }, [mode, jackpotInput, cashInput, useCustomCash, lumpSumInput, withdrawalInput, setAsideInput, allocs]);
 
-  const inputStyle = {
-    background: "#1a1a1a", border: "1px solid #333", color: "#e0e0e0",
-    padding: "8px 12px", borderRadius: "4px", fontSize: "14px",
-    fontFamily: "'IBM Plex Mono', monospace", width: "200px",
-  };
+  const satellites = useMemo(() => {
+    const count = parseInt(satCount) || 0;
+    const funding = parseFloat(satFunding) || 0;
+    const triggerYr = parseInt(satTriggerYear) || 20;
+    const rate = (parseFloat(satGrowthRate) || 7) / 100;
+    const totalFunded = count * funding;
+    const table = [];
+    let perTrust = funding;
+    for (let yr = 1; yr <= 50; yr++) {
+      perTrust = perTrust * (1 + rate);
+      if (DEFAULTS.milestones.includes(yr)) { table.push({ year: yr, perTrust, allTrusts: perTrust * count, triggered: yr >= triggerYr }); }
+    }
+    return { count, funding, totalFunded, triggerYr, rate, table };
+  }, [satCount, satFunding, satTriggerYear, satGrowthRate]);
 
+  const inputStyle = { background: "#1a1a1a", border: "1px solid #333", color: "#e0e0e0", padding: "8px 12px", borderRadius: "4px", fontSize: "14px", fontFamily: "'IBM Plex Mono', monospace", width: "200px" };
   const now = new Date();
   const dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
 
@@ -227,44 +200,18 @@ function App() {
         </div>
 
         <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 20 }}>
-          {["lottery", "direct"].map((m) => (
-            <button key={m} onClick={() => setMode(m)} style={{ background: mode === m ? "#1a1a1a" : "transparent", color: mode === m ? "#8bc34a" : "#555", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: m === "lottery" ? "4px 0 0 4px" : "0 4px 4px 0" }}>
-              {m === "lottery" ? "LOTTERY WIN" : "DIRECT INVESTMENT"}
-            </button>
-          ))}
+          {["lottery", "direct"].map((m) => (<button key={m} onClick={() => setMode(m)} style={{ background: mode === m ? "#1a1a1a" : "transparent", color: mode === m ? "#8bc34a" : "#555", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: m === "lottery" ? "4px 0 0 4px" : "0 4px 4px 0" }}>{m === "lottery" ? "LOTTERY WIN" : "DIRECT INVESTMENT"}</button>))}
         </div>
 
         <div className="no-print" style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 24, alignItems: "flex-end" }}>
-          {calc.isLottery ? (
-            <>
-              <div>
-                <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>ADVERTISED JACKPOT ($)</label>
-                <input style={inputStyle} type="number" value={jackpotInput} onChange={(e) => setJackpotInput(e.target.value)} />
-              </div>
-              <div>
-                <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>
-                  <input type="checkbox" checked={useCustomCash} onChange={(e) => setUseCustomCash(e.target.checked)} style={{ marginRight: 6 }} />CUSTOM CASH VALUE ($)
-                </label>
-                <input style={{ ...inputStyle, opacity: useCustomCash ? 1 : 0.3 }} type="number" value={cashInput} onChange={(e) => setCashInput(e.target.value)} disabled={!useCustomCash} />
-              </div>
-            </>
-          ) : (
-            <div>
-              <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>LUMP SUM TO INVEST ($)</label>
-              <input style={inputStyle} type="number" value={lumpSumInput} onChange={(e) => setLumpSumInput(e.target.value)} />
-            </div>
-          )}
-          <div>
-            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>ANNUAL WITHDRAWAL ($)</label>
-            <input style={inputStyle} type="number" value={withdrawalInput} onChange={(e) => setWithdrawalInput(e.target.value)} />
-          </div>
-          <div>
-            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>PRE-INVESTMENT SET-ASIDE ($)</label>
-            <input style={inputStyle} type="number" value={setAsideInput} onChange={(e) => setSetAsideInput(e.target.value)} />
-          </div>
+          {calc.isLottery ? (<>
+            <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>ADVERTISED JACKPOT ($)</label><input style={inputStyle} type="number" value={jackpotInput} onChange={(e) => setJackpotInput(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}><input type="checkbox" checked={useCustomCash} onChange={(e) => setUseCustomCash(e.target.checked)} style={{ marginRight: 6 }} />CUSTOM CASH VALUE ($)</label><input style={{ ...inputStyle, opacity: useCustomCash ? 1 : 0.3 }} type="number" value={cashInput} onChange={(e) => setCashInput(e.target.value)} disabled={!useCustomCash} /></div>
+          </>) : (<div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>LUMP SUM TO INVEST ($)</label><input style={inputStyle} type="number" value={lumpSumInput} onChange={(e) => setLumpSumInput(e.target.value)} /></div>)}
+          <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>ANNUAL WITHDRAWAL ($)</label><input style={inputStyle} type="number" value={withdrawalInput} onChange={(e) => setWithdrawalInput(e.target.value)} /></div>
+          <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>PRE-INVESTMENT SET-ASIDE ($)</label><input style={inputStyle} type="number" value={setAsideInput} onChange={(e) => setSetAsideInput(e.target.value)} /></div>
         </div>
 
-        {/* Allocation sliders */}
         <div className="no-print" style={{ marginBottom: 24, padding: "16px 20px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "4px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12 }}>
             <div style={{ fontSize: "11px", color: "#666", letterSpacing: "0.05em" }}>ALLOCATION MIX</div>
@@ -273,13 +220,7 @@ function App() {
               <button onClick={resetAllocs} style={{ background: "transparent", color: "#555", border: "1px solid #333", padding: "2px 8px", fontSize: "10px", fontFamily: "'IBM Plex Mono', monospace", cursor: "pointer", borderRadius: "3px" }}>RESET</button>
             </div>
           </div>
-          {DEFAULT_ALLOCS.map((a, i) => (
-            <div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}>
-              <div style={{ width: 70, fontSize: "11px", color: "#888", flexShrink: 0 }}>{a.shortLabel}</div>
-              <input type="range" min="0" max="100" step="5" value={allocs[i]} onChange={(e) => handleSlider(i, parseInt(e.target.value))} style={{ flex: 1, accentColor: "#8bc34a", height: 4 }} />
-              <div style={{ width: 36, fontSize: "12px", color: "#ccc", textAlign: "right", fontWeight: 500 }}>{allocs[i]}%</div>
-            </div>
-          ))}
+          {DEFAULT_ALLOCS.map((a, i) => (<div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}><div style={{ width: 70, fontSize: "11px", color: "#888", flexShrink: 0 }}>{a.shortLabel}</div><input type="range" min="0" max="100" step="5" value={allocs[i]} onChange={(e) => handleSlider(i, parseInt(e.target.value))} style={{ flex: 1, accentColor: "#8bc34a", height: 4 }} /><div style={{ width: 36, fontSize: "12px", color: "#ccc", textAlign: "right", fontWeight: 500 }}>{allocs[i]}%</div></div>))}
           {totalAlloc !== 100 && (<div style={{ fontSize: "10px", color: "#e57373", marginTop: 4 }}>Total must equal 100%. Currently {totalAlloc}% — adjust sliders.</div>)}
         </div>
 
@@ -294,8 +235,7 @@ function App() {
         <div className="summary-box" style={{ background: "#111", border: "1px solid #2a2a2a", padding: "16px 20px", marginBottom: 24, borderRadius: "4px" }}>
           {calc.isLottery && (<div style={{ color: "#8bc34a", fontSize: "15px", fontWeight: 600 }}>Net after taxes: {fmtFull(calc.net)}</div>)}
           <div style={{ color: "#8bc34a", fontSize: "15px", fontWeight: 600, marginTop: calc.isLottery ? 4 : 0 }}>
-            {!calc.isLottery && <>Investing: {fmtFull(calc.investable)} · </>}
-            {fmtFull(Math.round(calc.totalAfterTax))}/yr passive income (~{fmtFull(Math.round(calc.totalAfterTax / 12))}/mo)
+            {!calc.isLottery && <>Investing: {fmtFull(calc.investable)} · </>}{fmtFull(Math.round(calc.totalAfterTax))}/yr passive income (~{fmtFull(Math.round(calc.totalAfterTax / 12))}/mo)
           </div>
           <div style={{ color: "#777", fontSize: "12px", marginTop: 6 }}>Yr 1 total gross return: {fmtFull(Math.round(calc.yr1TotalGrossReturn))} — passive income is {pct(calc.passiveIncomeAsPercent)} of that</div>
         </div>
@@ -306,60 +246,22 @@ function App() {
 
         {calc.isLottery && (<>
           <SectionHeader>1. CASH OPTION → TAXES → NET</SectionHeader>
-          <Table rows={[
-            ["Advertised jackpot (annuity)", fmtFull(calc.jackpot)],
-            ["Cash option (" + pct(calc.cashRatioActual) + ")", fmtFull(calc.cash)],
-            ["", ""],
-            ["Federal 24% withholding (day-of)", fmtFull(calc.fedWithholding)],
-            ["Federal actual @ 37%", fmtFull(calc.fedActual)],
-            ["  └ Owed at filing", fmtFull(calc.fedOwedAtFiling)],
-            ["Arkansas state @ 3.7%", fmtFull(calc.arTax)],
-            ["Total tax", fmtFull(calc.totalTax)],
-            ["", ""],
-            ["NET TAKE-HOME", fmtFull(calc.net)],
-            ...(calc.setAside > 0 ? [["  └ Set-aside (not invested)", "−" + fmtFull(calc.setAside)], ["AMOUNT INVESTED", fmtFull(calc.investable)]] : []),
-          ]} highlight={calc.setAside > 0 ? [9, 11] : [9]} />
+          <Table rows={[["Advertised jackpot (annuity)", fmtFull(calc.jackpot)], ["Cash option (" + pct(calc.cashRatioActual) + ")", fmtFull(calc.cash)], ["", ""], ["Federal 24% withholding (day-of)", fmtFull(calc.fedWithholding)], ["Federal actual @ 37%", fmtFull(calc.fedActual)], ["  └ Owed at filing", fmtFull(calc.fedOwedAtFiling)], ["Arkansas state @ 3.7%", fmtFull(calc.arTax)], ["Total tax", fmtFull(calc.totalTax)], ["", ""], ["NET TAKE-HOME", fmtFull(calc.net)], ...(calc.setAside > 0 ? [["  └ Set-aside (not invested)", "−" + fmtFull(calc.setAside)], ["AMOUNT INVESTED", fmtFull(calc.investable)]] : [])]} highlight={calc.setAside > 0 ? [9, 11] : [9]} />
         </>)}
 
         <SectionHeader>2. ALLOCATION OF NET</SectionHeader>
-        <Table headers={["Bucket", "Alloc", "Invested", "Yield", "Gross Income"]} rows={[
-          ...calc.buckets.map((b) => [b.label, pct(b.pct), fmt(b.invested), pct(b.yield), fmtFull(Math.round(b.grossIncome))]),
-          ["", "", "", "", ""],
-          ["TOTAL", pct(allocs.reduce((s, v) => s + v, 0) / 100), fmtFull(Math.round(calc.investable)), "", fmtFull(Math.round(calc.grossDivAndInt))],
-        ]} highlight={[calc.buckets.length + 1]} />
+        <Table headers={["Bucket", "Alloc", "Invested", "Yield", "Gross Income"]} rows={[...calc.buckets.map((b) => [b.label, pct(b.pct), fmt(b.invested), pct(b.yield), fmtFull(Math.round(b.grossIncome))]), ["", "", "", "", ""], ["TOTAL", pct(allocs.reduce((s, v) => s + v, 0) / 100), fmtFull(Math.round(calc.investable)), "", fmtFull(Math.round(calc.grossDivAndInt))]]} highlight={[calc.buckets.length + 1]} />
 
         <SectionHeader>3. AFTER-TAX INCOME BY BUCKET</SectionHeader>
-        <Table headers={["Bucket", "Gross", "Fed Tax", "AR Tax", "After-Tax"]} rows={[
-          ...calc.buckets.map((b) => [b.label, fmtFull(Math.round(b.grossIncome)), fmtFull(Math.round(b.fedTax)), fmtFull(Math.round(b.stateTax)), fmtFull(Math.round(b.afterTax))]),
-          ["", "", "", "", ""],
-          ["TOTAL", fmtFull(Math.round(calc.grossDivAndInt)), fmtFull(Math.round(calc.buckets.reduce((s, b) => s + b.fedTax, 0))), fmtFull(Math.round(calc.buckets.reduce((s, b) => s + b.stateTax, 0))), fmtFull(Math.round(calc.totalAfterTax))],
-        ]} highlight={[calc.buckets.length + 1]} />
+        <Table headers={["Bucket", "Gross", "Fed Tax", "AR Tax", "After-Tax"]} rows={[...calc.buckets.map((b) => [b.label, fmtFull(Math.round(b.grossIncome)), fmtFull(Math.round(b.fedTax)), fmtFull(Math.round(b.stateTax)), fmtFull(Math.round(b.afterTax))]), ["", "", "", "", ""], ["TOTAL", fmtFull(Math.round(calc.grossDivAndInt)), fmtFull(Math.round(calc.buckets.reduce((s, b) => s + b.fedTax, 0))), fmtFull(Math.round(calc.buckets.reduce((s, b) => s + b.stateTax, 0))), fmtFull(Math.round(calc.totalAfterTax))]]} highlight={[calc.buckets.length + 1]} />
 
         <SectionHeader>4. INCOME SUMMARY (YEAR 1)</SectionHeader>
-        <Table rows={[
-          ["Qualified dividend income (after-tax)", fmtFull(Math.round(calc.qualAfterTax)) + "/yr", fmtFull(Math.round(calc.qualAfterTax / 12)) + "/mo"],
-          ["Interest income (after-tax)", fmtFull(Math.round(calc.intAfterTax)) + "/yr", fmtFull(Math.round(calc.intAfterTax / 12)) + "/mo"],
-          ["", "", ""],
-          ["TOTAL PASSIVE INCOME (after-tax)", fmtFull(Math.round(calc.totalAfterTax)) + "/yr", fmtFull(Math.round(calc.totalAfterTax / 12)) + "/mo"],
-        ]} highlight={[3]} />
-
+        <Table rows={[["Qualified dividend income (after-tax)", fmtFull(Math.round(calc.qualAfterTax)) + "/yr", fmtFull(Math.round(calc.qualAfterTax / 12)) + "/mo"], ["Interest income (after-tax)", fmtFull(Math.round(calc.intAfterTax)) + "/yr", fmtFull(Math.round(calc.intAfterTax / 12)) + "/mo"], ["", "", ""], ["TOTAL PASSIVE INCOME (after-tax)", fmtFull(Math.round(calc.totalAfterTax)) + "/yr", fmtFull(Math.round(calc.totalAfterTax / 12)) + "/mo"]]} highlight={[3]} />
         <div className="section-header" style={{ fontSize: "11px", color: "#666", marginTop: 8, marginBottom: 4 }}>YEAR 1 TOTAL RETURN CONTEXT</div>
-        <Table rows={[
-          ["Capital growth (7% on growth buckets)", fmtFull(Math.round(calc.yr1CapitalGrowth)), "(unrealized — stays invested)"],
-          ["Gross dividends + interest (all buckets)", fmtFull(Math.round(calc.grossDivAndInt)), "(produces passive income above)"],
-          ["", "", ""],
-          ["TOTAL GROSS RETURN (Yr 1)", fmtFull(Math.round(calc.yr1TotalGrossReturn)), ""],
-          ["After-tax passive income as % of total gross return", pct(calc.passiveIncomeAsPercent), ""],
-        ]} highlight={[3]} />
-
+        <Table rows={[["Capital growth (7% on growth buckets)", fmtFull(Math.round(calc.yr1CapitalGrowth)), "(unrealized — stays invested)"], ["Gross dividends + interest (all buckets)", fmtFull(Math.round(calc.grossDivAndInt)), "(produces passive income above)"], ["", "", ""], ["TOTAL GROSS RETURN (Yr 1)", fmtFull(Math.round(calc.yr1TotalGrossReturn)), ""], ["After-tax passive income as % of total gross return", pct(calc.passiveIncomeAsPercent), ""]]} highlight={[3]} />
         {calc.annualWithdrawal > 0 && (<>
           <div className="section-header" style={{ fontSize: "11px", color: "#666", marginTop: 8, marginBottom: 4 }}>WITHDRAWAL CONTEXT</div>
-          <Table rows={[
-            ["Annual withdrawal", fmtFull(calc.annualWithdrawal), ""],
-            ["As % of total gross return (" + fmtFull(Math.round(calc.yr1TotalGrossReturn)) + ")", pct(calc.withdrawalPctOfGross), calc.withdrawalPctOfGross > 1 ? "⚠ exceeds total gross" : ""],
-            ["As % of net passive income (" + fmtFull(Math.round(calc.totalAfterTax)) + ")", pct(calc.withdrawalPctOfNet), calc.withdrawalPctOfNet > 1 ? "⚠ exceeds net passive" : ""],
-            ["As % of total invested principal (" + fmtFull(Math.round(calc.investable)) + ")", pct(calc.withdrawalPctOfPrincipal || 0), ""],
-          ]} highlight={[]} />
+          <Table rows={[["Annual withdrawal", fmtFull(calc.annualWithdrawal), ""], ["As % of total gross return (" + fmtFull(Math.round(calc.yr1TotalGrossReturn)) + ")", pct(calc.withdrawalPctOfGross), calc.withdrawalPctOfGross > 1 ? "⚠ exceeds total gross" : ""], ["As % of net passive income (" + fmtFull(Math.round(calc.totalAfterTax)) + ")", pct(calc.withdrawalPctOfNet), calc.withdrawalPctOfNet > 1 ? "⚠ exceeds net passive" : ""], ["As % of total invested principal (" + fmtFull(Math.round(calc.investable)) + ")", pct(calc.withdrawalPctOfPrincipal || 0), ""]]} highlight={[]} />
         </>)}
 
         <SectionHeader>5. COMPOUND GROWTH (7% GROWTH · INCOME REINVESTED)</SectionHeader>
@@ -367,11 +269,31 @@ function App() {
           Starting growth pool (S&amp;P + Stocks): {fmt(calc.startingGrowthPrincipal)} · Income pool (starting): {fmt(calc.startingIncomePool)}
           {calc.annualWithdrawal > 0 && <span> · Withdrawing {fmtFull(calc.annualWithdrawal)}/yr from growth pool</span>}
         </div>
-        <Table headers={["Year", "Growth Pool", "Income Pool", "Total Portfolio", "Total Withdrawn"]} rows={calc.compoundTable.map((r) => [
-          "Yr " + r.year, fmt(Math.round(r.growthPool)), fmt(Math.round(r.incomePool)),
-          fmt(Math.round(r.totalPortfolio)),
-          calc.annualWithdrawal > 0 ? fmtFull(Math.round(r.totalWithdrawn)) : "—",
-        ])} highlight={[calc.compoundTable.length - 1]} />
+        <Table headers={["Year", "Growth Pool", "Income Pool", "Total Portfolio", "Total Withdrawn"]} rows={calc.compoundTable.map((r) => ["Yr " + r.year, fmt(Math.round(r.growthPool)), fmt(Math.round(r.incomePool)), fmt(Math.round(r.totalPortfolio)), calc.annualWithdrawal > 0 ? fmtFull(Math.round(r.totalWithdrawn)) : "—"])} highlight={[calc.compoundTable.length - 1]} />
+
+        {/* Section 6: Satellite Trusts */}
+        <div style={{ marginTop: 28 }}>
+          <div className="no-print" onClick={() => setShowSatellites(!showSatellites)} style={{ fontSize: "12px", fontWeight: 600, color: "#666", letterSpacing: "0.04em", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ color: "#555", fontSize: "10px" }}>{showSatellites ? "▼" : "▶"}</span>
+            6. SATELLITE TRUSTS (GROWTH ONLY)
+          </div>
+          {showSatellites && (<>
+            <div className="no-print" style={{ display: "flex", flexWrap: "wrap", gap: 12, marginTop: 12, marginBottom: 16 }}>
+              <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>COUNT</label><input style={{ ...inputStyle, width: 70 }} type="number" min="1" max="20" value={satCount} onChange={(e) => setSatCount(e.target.value)} /></div>
+              <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>FUNDING EACH ($)</label><input style={{ ...inputStyle, width: 150 }} type="number" value={satFunding} onChange={(e) => setSatFunding(e.target.value)} /></div>
+              <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>TRIGGER YEAR</label><input style={{ ...inputStyle, width: 70 }} type="number" min="1" max="50" value={satTriggerYear} onChange={(e) => setSatTriggerYear(e.target.value)} /></div>
+              <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>GROWTH %</label><input style={{ ...inputStyle, width: 70 }} type="number" min="1" max="20" value={satGrowthRate} onChange={(e) => setSatGrowthRate(e.target.value)} /></div>
+            </div>
+            <div style={{ fontSize: "11px", color: "#666", marginBottom: 8 }}>{satellites.count} trusts × {fmtFull(satellites.funding)} = {fmtFull(satellites.totalFunded)} total funded · {parseFloat(satGrowthRate)}% growth · Trigger at Yr {satellites.triggerYr}</div>
+            <Table headers={["Year", "Per Trust", "All Trusts (" + satellites.count + ")", "Status"]} rows={satellites.table.map((r) => ["Yr " + r.year, fmt(Math.round(r.perTrust)), fmt(Math.round(r.allTrusts)), r.triggered ? "✓ Triggered" : "Growing"])} highlight={[satellites.table.findIndex(r => r.triggered)]} />
+            <div style={{ fontSize: "11px", color: "#555", marginTop: 8 }}>
+              <div>• Pure growth — no income allocation. 80/15/5 (US index / intl / small-cap value) recommended.</div>
+              <div>• Trust income taxed at compressed brackets (37% at ~$14,450). Minimize dividends.</div>
+              <div>• Each trust needs EIN, Form 1041, trustee. ~$5-10K/yr admin per trust.</div>
+              <div>• Funding counts against $15M lifetime gift exemption per individual.</div>
+            </div>
+          </>)}
+        </div>
 
         <div className="disclaimer" style={{ marginTop: 32, fontSize: "11px", color: "#555", borderTop: "1px solid #222", paddingTop: 16 }}>
           <div>• Cash ratio default 50%. Actual varies with prevailing interest rates.</div>
