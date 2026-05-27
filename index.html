@@ -95,6 +95,7 @@ function App() {
   const [withdrawalInput, setWithdrawalInput] = useState("0");
   const [setAsideInput, setSetAsideInput] = useState("0");
   const [allocs, setAllocs] = useState(DEFAULT_ALLOCS.map(a => a.pct));
+  const [yields, setYields] = useState(DEFAULT_ALLOCS.map(a => (a.yield * 100).toFixed(2)));
   const [growthRateInput, setGrowthRateInput] = useState("7");
   const [showSatellites, setShowSatellites] = useState(false);
   const [satCount, setSatCount] = useState("3");
@@ -105,12 +106,12 @@ function App() {
 
   const totalAlloc = allocs.reduce((s, v) => s + v, 0);
   const handleSlider = useCallback((i, v) => { setAllocs(p => { const u = [...p]; u[i] = v; return u; }); }, []);
-  const resetAllocs = useCallback(() => { setAllocs(DEFAULT_ALLOCS.map(a => a.pct)); }, []);
+  const resetAllocs = useCallback(() => { setAllocs(DEFAULT_ALLOCS.map(a => a.pct)); setYields(DEFAULT_ALLOCS.map(a => (a.yield * 100).toFixed(2))); }, []);
   const growthRate = (parseFloat(growthRateInput) || 7) / 100;
 
   const calc = useMemo(() => {
     const isLottery = mode === "lottery";
-    const allocations = DEFAULT_ALLOCS.map((a, i) => ({ ...a, pct: allocs[i] / 100 }));
+    const allocations = DEFAULT_ALLOCS.map((a, i) => ({ ...a, pct: allocs[i] / 100, yield: (parseFloat(yields[i]) || 0) / 100 }));
     let jackpot = 0, cash = 0, cashRatioActual = 0, ratioFlag = false;
     let fedWithholding = 0, fedActual = 0, fedOwedAtFiling = 0, arTax = 0, totalTax = 0, net = 0;
     if (isLottery) {
@@ -193,7 +194,7 @@ function App() {
     const withdrawalPctOfNet = totalAfterTax > 0 ? annualWithdrawal / totalAfterTax : 0;
     const withdrawalPctOfPrincipal = investable > 0 ? annualWithdrawal / investable : 0;
     return { isLottery, jackpot, cash, cashRatioActual, ratioFlag, fedWithholding, fedActual, fedOwedAtFiling, arTax, totalTax, net, setAside, investable, buckets, qualAfterTax, muniAfterTax, intAfterTax, totalAfterTax, grossDivAndInt, yr1CapitalGrowth, yr1TotalGrossReturn, passiveIncomeAsPercent, startingGrowthPrincipal, startingIncomePool, annualWithdrawal, compoundTable, withdrawalPctOfGross, withdrawalPctOfNet, withdrawalPctOfPrincipal };
-  }, [mode, jackpotInput, cashInput, useCustomCash, lumpSumInput, withdrawalInput, setAsideInput, allocs, growthRate]);
+  }, [mode, jackpotInput, cashInput, useCustomCash, lumpSumInput, withdrawalInput, setAsideInput, allocs, yields, growthRate]);
 
   const satellites = useMemo(() => {
     const count = parseInt(satCount) || 0;
@@ -275,7 +276,7 @@ function App() {
               <button onClick={resetAllocs} style={{ background: "transparent", color: "#555", border: "1px solid #333", padding: "2px 8px", fontSize: "10px", fontFamily: "'IBM Plex Mono', monospace", cursor: "pointer", borderRadius: "3px" }}>RESET</button>
             </div>
           </div>
-          {DEFAULT_ALLOCS.map((a, i) => (<div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}><div style={{ width: 70, fontSize: "11px", color: "#888", flexShrink: 0 }}>{a.shortLabel}</div><input type="range" min="0" max="100" step="1" value={allocs[i]} onChange={e => handleSlider(i, parseInt(e.target.value))} style={{ flex: 1, accentColor: "#8bc34a", height: 4 }} /><div style={{ width: 36, fontSize: "12px", color: "#ccc", textAlign: "right", fontWeight: 500 }}>{allocs[i]}%</div></div>))}
+          {DEFAULT_ALLOCS.map((a, i) => (<div key={i} style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 6 }}><div style={{ width: 70, fontSize: "11px", color: "#888", flexShrink: 0 }}>{a.shortLabel}</div><input type="range" min="0" max="100" step="1" value={allocs[i]} onChange={e => handleSlider(i, parseInt(e.target.value))} style={{ flex: 1, accentColor: "#8bc34a", height: 4 }} /><div style={{ width: 36, fontSize: "12px", color: "#ccc", textAlign: "right", fontWeight: 500 }}>{allocs[i]}%</div><div style={{ width: 14, fontSize: "10px", color: "#444", textAlign: "center", flexShrink: 0 }}>|</div><input type="number" min="0" max="20" step="0.01" value={yields[i]} onChange={e => { const v = [...yields]; v[i] = e.target.value; setYields(v); }} style={{ width: 58, background: "#111", border: "1px solid #2a2a2a", color: "#aaa", padding: "2px 6px", borderRadius: "3px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", textAlign: "right" }} /><div style={{ width: 14, fontSize: "10px", color: "#555", flexShrink: 0 }}>%</div></div>))}
           {totalAlloc !== 100 && (<div style={{ fontSize: "10px", color: "#e57373", marginTop: 4 }}>Total must equal 100%. Currently {totalAlloc}% — adjust sliders.</div>)}
         </div>
 
