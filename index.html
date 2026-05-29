@@ -188,7 +188,7 @@ function App() {
       if (left >= 0) ip = ip + left; else gp = gp + left;
       if (gp < 0) gp = 0;
       twc += annualWithdrawal;
-      if (DEFAULTS.milestones.includes(yr)) compoundTable.push({ year: yr, growthPool: gp, incomePool: ip, totalPortfolio: gp + ip, totalWithdrawn: twc, yrPassiveIncome: tpi });
+      if (DEFAULTS.milestones.includes(yr)) compoundTable.push({ year: yr, growthPool: gp, incomePool: ip, totalPortfolio: gp + ip, totalWithdrawn: twc, yrPassiveIncome: tpi, yrGrowthDivIncome: gpd, yrIncomePoolIncome: ipi });
     }
     const withdrawalPctOfGross = yr1TotalGrossReturn > 0 ? annualWithdrawal / yr1TotalGrossReturn : 0;
     const withdrawalPctOfNet = totalAfterTax > 0 ? annualWithdrawal / totalAfterTax : 0;
@@ -324,6 +324,16 @@ function App() {
           {calc.annualWithdrawal > 0 && <span> · Withdrawing {fmtFull(calc.annualWithdrawal)}/yr</span>}
         </div>
         <Table headers={["Year", "Growth Pool", "Income Pool", "Total Portfolio", "Total Withdrawn"]} rows={calc.compoundTable.map(r => ["Yr " + r.year, fmt(Math.round(r.growthPool)), fmt(Math.round(r.incomePool)), fmt(Math.round(r.totalPortfolio)), calc.annualWithdrawal > 0 ? fmtFull(Math.round(r.totalWithdrawn)) : "—"])} highlight={[calc.compoundTable.length - 1]} />
+
+        <SectionHeader>5A. PROJECTED PASSIVE INCOME ({growthRateInput}% GROWTH)</SectionHeader>
+        <div style={{ fontSize: "11px", color: "#666", marginBottom: 8 }}>
+          Year 1 baseline: {fmtFull(Math.round(calc.totalAfterTax))}/yr · Growth-bucket dividends scale with corpus · Income-pool yield stays ~flat
+          {calc.annualWithdrawal > 0 && <span> · Income shown is before withdrawal</span>}
+        </div>
+        <Table headers={["Year", "Growth Divs", "Income Pool", "Total Income", "Monthly", "vs Yr 1"]} rows={calc.compoundTable.map((r, ri) => {
+          const mult = calc.totalAfterTax > 0 ? r.yrPassiveIncome / calc.totalAfterTax : 0;
+          return ["Yr " + r.year, fmtFull(Math.round(r.yrGrowthDivIncome)), fmtFull(Math.round(r.yrIncomePoolIncome)), fmtFull(Math.round(r.yrPassiveIncome)), fmtFull(Math.round(r.yrPassiveIncome / 12)) + "/mo", ri === 0 ? "—" : mult.toFixed(1) + "×"];
+        })} highlight={[calc.compoundTable.length - 1]} />
 
         <div style={{ marginTop: 28 }}>
           <div className="no-print" onClick={() => setShowSatellites(!showSatellites)} style={{ fontSize: "12px", fontWeight: 600, color: "#666", letterSpacing: "0.04em", cursor: "pointer", userSelect: "none", display: "flex", alignItems: "center", gap: 8 }}>
