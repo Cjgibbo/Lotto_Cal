@@ -82,7 +82,6 @@ function App() {
     const totalYears = Math.max(parseInt(projectionYears) || 30, birthSchedule.length);
 
     // Sub-trust tracking
-    // Each sub-trust: { id, name, birthYear, age, balance, funded (has been assigned a birth), contributions, capped }
     let subTrusts = [];
     let nextId = 1;
     let masterCorpus = startCorpus;
@@ -128,6 +127,8 @@ function App() {
             funded: true,
             contributions: 0,
             capped: false,
+            balanceAt18: null,
+            balanceAt40: null,
           };
           subTrusts.push(newTrust);
           nextId++;
@@ -151,6 +152,8 @@ function App() {
             funded: false,
             contributions: 0,
             capped: false,
+            balanceAt18: null,
+            balanceAt40: null,
           });
         }
       } else if (birthsThisYear === 0 && subTrusts.length > 0 && subTrusts.every(st => st.funded)) {
@@ -207,6 +210,16 @@ function App() {
         if (st.funded && st.age >= stopAgeVal) st.capped = true;
       });
 
+      // Capture milestone snapshots
+      subTrusts.forEach(st => {
+        if (st.funded && st.age === stopAgeVal && st.balanceAt18 === null) {
+          st.balanceAt18 = st.balance;
+        }
+        if (st.funded && st.age === 40 && st.balanceAt40 === null) {
+          st.balanceAt40 = st.balance;
+        }
+      });
+
       // Snapshot for this year
       yearlyData.push({
         year: yr,
@@ -236,20 +249,13 @@ function App() {
       balance: st.balance,
       contributions: st.contributions,
       capped: st.capped,
-      atAge18: null,
+      balanceAt18: st.balanceAt18,
+      balanceAt40: st.balanceAt40,
+      // If they haven't reached 18 yet, project forward
+      projectedAt18: st.balanceAt18 !== null ? st.balanceAt18 : st.balance * Math.pow(1 + gRate, Math.max(stopAgeVal - st.age, 0)),
+      // If they haven't reached 40 yet, project forward
+      projectedAt40: st.balanceAt40 !== null ? st.balanceAt40 : st.balance * Math.pow(1 + gRate, Math.max(40 - st.age, 0)),
     }));
-
-    // Project each to age 18
-    finalSubTrusts.forEach(st => {
-      if (st.currentAge >= stopAgeVal) {
-        st.atAge18 = st.balance;
-      } else {
-        const yearsLeft = stopAgeVal - st.currentAge;
-        // Balance grows at gRate, plus continued contributions at current rate for remaining years
-        // Simplification: just compound existing balance (conservative — no future contributions)
-        st.atAge18 = st.balance * Math.pow(1 + gRate, yearsLeft);
-      }
-    });
 
     return { yearlyData, finalSubTrusts, totalYears, startCorpus, gRate, iYield, minSeedAmt, capAmt, stopAgeVal };
   }, [corpus, growthRate, incomeYield, minSeed, fundingCap, stopAge, projectionYears, birthSchedule]);
@@ -393,41 +399,51 @@ function App() {
           </table>
         </div>
 
-        {/* FINAL PROJECTIONS */}
-        <SectionHeader>3. PROJECTED VALUE AT AGE {stopAge}</SectionHeader>
+        {/* MILESTONES */}
+        <SectionHeader>3. SUB-TRUST MILESTONES</SectionHeader>
         <div style={{ fontSize: "11px", color: "#666", marginBottom: 8 }}>
-          "At Age {stopAge}" projects current balance forward at {growthRate}% with no additional contributions (conservative — actual will be higher if still receiving distributions).
+          "Value @ {stopAge}" is the actual recorded balance when the child turned {stopAge} (or projected forward at {growthRate}% if not yet reached).
+          "Value @ 40" is the actual or projected balance at age 40 — the income conversion target.
         </div>
         <div style={{ overflowX: "auto", marginBottom: 8 }}>
           <table style={{ borderCollapse: "collapse", width: "100%" }}>
             <thead>
               <tr>
-                {["Sub-Trust", "Born Yr", "Current Age", "Balance Now", "Contributions", "Capped?", "Projected @ " + stopAge].map((h, i) => (
+                {["Sub-Trust", "Born Yr", "Age Now", "Contributions", "Value @ " + stopAge, "Value @ 40", "Balance Now"].map((h, i) => (
                   <th key={i} style={{ padding: "4px 12px 4px 0", textAlign: i >= 3 ? "right" : "left", fontSize: "11px", color: "#555", fontWeight: 500, borderBottom: "1px solid #333" }}>{h}</th>
                 ))}
               </tr>
             </thead>
             <tbody>
               {sim.finalSubTrusts.map((st, ri) => {
-                const hitTarget = st.atAge18 >= 2000000;
+                const reached18 = st.balanceAt18 !== null;
+                const reached40 = st.balanceAt40 !== null;
+                const val18 = st.projectedAt18;
+                const val40 = st.projectedAt40;
+                const hit18Target = val18 >= 2000000;
+                const hit40Target = val40 >= 10000000;
                 return (
                   <tr key={ri}>
                     <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#ccc", borderBottom: "1px solid #1a1a1a" }}>{st.name}</td>
                     <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#888", borderBottom: "1px solid #1a1a1a" }}>{st.birthYear}</td>
                     <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#888", borderBottom: "1px solid #1a1a1a" }}>{st.currentAge}</td>
-                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#ccc", textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>{fmt(Math.round(st.balance))}</td>
                     <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#888", textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>{fmtFull(Math.round(st.contributions))}</td>
-                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: st.capped ? "#8bc34a" : "#555", borderBottom: "1px solid #1a1a1a" }}>{st.capped ? "✓ Capped" : "—"}</td>
-                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: hitTarget ? "#8bc34a" : "#ffb74d", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>{fmt(Math.round(st.atAge18))}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: hit18Target ? "#8bc34a" : "#ffb74d", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>
+                      {fmt(Math.round(val18))}{!reached18 && <span style={{ color: "#555", fontWeight: 400, fontSize: "10px" }}> est</span>}
+                    </td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: hit40Target ? "#8bc34a" : "#ffb74d", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>
+                      {fmt(Math.round(val40))}{!reached40 && <span style={{ color: "#555", fontWeight: 400, fontSize: "10px" }}> est</span>}
+                    </td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#ccc", textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>{fmt(Math.round(st.balance))}</td>
                   </tr>
                 );
               })}
               <tr>
                 <td colSpan={3} style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, borderBottom: "1px solid #333" }}>TOTAL</td>
-                <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmt(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.balance, 0)))}</td>
                 <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmtFull(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.contributions, 0)))}</td>
-                <td style={{ padding: "6px 12px 4px 0", borderBottom: "1px solid #333" }}></td>
-                <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmt(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.atAge18, 0)))}</td>
+                <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmt(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.projectedAt18, 0)))}</td>
+                <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmt(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.projectedAt40, 0)))}</td>
+                <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmt(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.balance, 0)))}</td>
               </tr>
             </tbody>
           </table>
@@ -441,7 +457,8 @@ function App() {
           <div>• Unnamed placeholders created in years with no births, assigned to first birth in queue.</div>
           <div>• Funding stops when sub-trust hits {fmtFull(sim.capAmt)} or child reaches age {stopAge}, whichever first.</div>
           <div>• Capped sub-trust's share redistributes to remaining underfunded sub-trusts.</div>
-          <div>• "Projected @ {stopAge}" compounds current balance at {growthRate}% with no further contributions (conservative floor).</div>
+          <div>• "Value @ {stopAge}" and "Value @ 40" show actual recorded balance at that age, or projected forward at {growthRate}% if not yet reached (marked "est").</div>
+          <div>• Green = hit target ($2M+ at {stopAge}, $10M+ at 40). Amber = below target.</div>
           <div>• This is a planning model, not legal or tax advice. Actual returns vary. Sequence-of-returns risk applies.</div>
         </div>
       </div>
