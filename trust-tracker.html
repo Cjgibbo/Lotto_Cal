@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Trust Tracker" />
+<title>Sub-Trust Seeding Tracker</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d0d0d; }
+  @media print {
+    body, html { background: #fff !important; color: #000 !important; }
+    .no-print { display: none !important; }
+    .print-root { background: #fff !important; color: #111 !important; padding: 0 !important; font-size: 11px !important; }
+    .print-root * { color: #111 !important; border-color: #ccc !important; }
+    .print-root .summary-box { border: 2px solid #111 !important; background: #f5f5f5 !important; }
+    .print-root .summary-box * { color: #111 !important; }
+    .print-root .highlight-row { font-weight: 700 !important; }
+    .print-root .section-header { color: #333 !important; border-bottom: 1px solid #999; padding-bottom: 2px; }
+    .print-root table { width: 100% !important; }
+    .print-root td, .print-root th { font-size: 10px !important; padding: 2px 8px 2px 0 !important; }
+    @page { margin: 0.5in; size: letter; }
+  }
+</style>
+<script crossorigin src="https://unpkg.com/react@18/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useCallback } = React;
+
+const fmt = (n) => {
+  if (Math.abs(n) >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+  if (Math.abs(n) >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M";
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+};
+const fmtFull = (n) => n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const pct = (n) => (n * 100).toFixed(1) + "%";
+
+function SectionHeader({ children }) {
+  return (<div className="section-header" style={{ fontSize: "12px", fontWeight: 600, color: "#666", marginTop: 28, marginBottom: 8, letterSpacing: "0.04em" }}>{children}</div>);
+}
+
+function App() {
+  const [corpus, setCorpus] = useState("14000000");
+  const [growthRate, setGrowthRate] = useState("8");
+  const [incomeYield, setIncomeYield] = useState("1.8");
+  const [minSeed, setMinSeed] = useState("100000");
+  const [fundingCap, setFundingCap] = useState("1500000");
+  const [stopAge, setStopAge] = useState("18");
+  const [projectionYears, setProjectionYears] = useState("30");
+  const [birthSchedule, setBirthSchedule] = useState([0,0,0,1,0,1,1,1,2,1]);
+
+  const handleBirthChange = useCallback((idx, val) => {
+    setBirthSchedule(prev => {
+      const next = [...prev];
+      next[idx] = Math.max(0, Math.min(5, parseInt(val) || 0));
+      return next;
+    });
+  }, []);
+
+  const addYear = useCallback(() => {
+    setBirthSchedule(prev => [...prev, 0]);
+  }, []);
+
+  const removeYear = useCallback(() => {
+    setBirthSchedule(prev => prev.length > 1 ? prev.slice(0, -1) : prev);
+  }, []);
+
+  const sim = useMemo(() => {
+    const startCorpus = parseFloat(corpus) || 0;
+    const gRate = (parseFloat(growthRate) || 8) / 100;
+    const iYield = (parseFloat(incomeYield) || 1.8) / 100;
+    const minSeedAmt = parseFloat(minSeed) || 100000;
+    const capAmt = parseFloat(fundingCap) || 1500000;
+    const stopAgeVal = parseInt(stopAge) || 18;
+    const totalYears = Math.max(parseInt(projectionYears) || 30, birthSchedule.length);
+
+    // Sub-trust tracking
+    // Each sub-trust: { id, name, birthYear, age, balance, funded (has been assigned a birth), contributions, capped }
+    let subTrusts = [];
+    let nextId = 1;
+    let masterCorpus = startCorpus;
+    const yearlyData = [];
+
+    for (let yr = 1; yr <= totalYears; yr++) {
+      // Step 1: Master trust grows
+      masterCorpus = masterCorpus * (1 + gRate);
+
+      // Step 2: Calculate income for this year
+      const yearIncome = masterCorpus * iYield;
+
+      // Step 3: Determine births this year
+      const birthsThisYear = yr <= birthSchedule.length ? birthSchedule[yr - 1] : 0;
+
+      // Step 4: Age all existing sub-trusts
+      subTrusts.forEach(st => { st.age++; });
+
+      // Step 5: Grow all existing sub-trust balances
+      subTrusts.forEach(st => {
+        st.balance = st.balance * (1 + gRate);
+      });
+
+      // Step 6: Handle births — assign unnamed placeholders first, then create new
+      let newThisYear = [];
+      for (let b = 0; b < birthsThisYear; b++) {
+        // Look for unnamed placeholder
+        const placeholder = subTrusts.find(st => !st.funded);
+        if (placeholder) {
+          placeholder.funded = true;
+          placeholder.name = "Child " + nextId;
+          placeholder.birthYear = yr;
+          placeholder.age = 0;
+          nextId++;
+        } else {
+          // Create new sub-trust
+          const newTrust = {
+            id: nextId,
+            name: "Child " + nextId,
+            birthYear: yr,
+            age: 0,
+            balance: 0,
+            funded: true,
+            contributions: 0,
+            capped: false,
+          };
+          subTrusts.push(newTrust);
+          nextId++;
+          newThisYear.push(newTrust);
+        }
+      }
+
+      // Step 7: If no sub-trusts exist and no births, create unnamed placeholders
+      // Rule: in years with no births and no existing sub-trusts, or early years,
+      // create placeholders from income
+      if (subTrusts.length === 0 && birthsThisYear === 0) {
+        // Create placeholders — how many? Use income / minSeed, max 3
+        const numPlaceholders = Math.min(3, Math.max(1, Math.floor(yearIncome / minSeedAmt)));
+        for (let p = 0; p < numPlaceholders; p++) {
+          subTrusts.push({
+            id: 0, // placeholder
+            name: "Unnamed #" + (p + 1),
+            birthYear: null,
+            age: 0,
+            balance: 0,
+            funded: false,
+            contributions: 0,
+            capped: false,
+          });
+        }
+      } else if (birthsThisYear === 0 && subTrusts.length > 0 && subTrusts.every(st => st.funded)) {
+        // All existing are funded, no births — no new placeholders needed
+      } else if (birthsThisYear === 0 && subTrusts.some(st => !st.funded)) {
+        // Existing unnamed placeholders — they just accumulate
+      }
+
+      // Step 8: Distribute income to sub-trusts
+      // Rules:
+      // - Sub-trusts that hit cap or age stopAge don't receive more
+      // - Weight distribution: older/lower-balance trusts get more
+      // - New sub-trusts get at least minSeed if just created
+      let distributableIncome = yearIncome;
+      const reserveForFees = yearIncome * 0.02; // 2% for admin
+      distributableIncome -= reserveForFees;
+
+      // First: ensure minimum seed for any new sub-trust created this year with $0 balance
+      newThisYear.forEach(st => {
+        if (st.balance < minSeedAmt && distributableIncome >= minSeedAmt) {
+          const needed = minSeedAmt - st.balance;
+          const give = Math.min(needed, distributableIncome);
+          st.balance += give;
+          st.contributions += give;
+          distributableIncome -= give;
+        }
+      });
+
+      // Determine eligible sub-trusts for distribution
+      const eligible = subTrusts.filter(st => {
+        if (st.balance >= capAmt) { st.capped = true; return false; }
+        if (st.funded && st.age >= stopAgeVal) { st.capped = true; return false; }
+        return true;
+      });
+
+      if (eligible.length > 0 && distributableIncome > 0) {
+        // Weight by deficit: how far each is from cap
+        const deficits = eligible.map(st => Math.max(capAmt - st.balance, 1));
+        const totalDeficit = deficits.reduce((s, d) => s + d, 0);
+
+        eligible.forEach((st, idx) => {
+          const share = (deficits[idx] / totalDeficit) * distributableIncome;
+          // Don't overshoot cap
+          const maxCanReceive = capAmt - st.balance;
+          const give = Math.min(share, maxCanReceive);
+          st.balance += give;
+          st.contributions += give;
+        });
+      }
+
+      // Re-check caps after distribution
+      subTrusts.forEach(st => {
+        if (st.balance >= capAmt) st.capped = true;
+        if (st.funded && st.age >= stopAgeVal) st.capped = true;
+      });
+
+      // Snapshot for this year
+      yearlyData.push({
+        year: yr,
+        masterCorpus: masterCorpus,
+        yearIncome: yearIncome,
+        birthsThisYear,
+        totalSubTrusts: subTrusts.filter(st => st.funded).length,
+        totalPlaceholders: subTrusts.filter(st => !st.funded).length,
+        subTrustSnapshots: subTrusts.map(st => ({
+          name: st.name,
+          funded: st.funded,
+          age: st.age,
+          balance: st.balance,
+          contributions: st.contributions,
+          capped: st.capped,
+          birthYear: st.birthYear,
+        })),
+        reserveForFees,
+      });
+    }
+
+    // Summary: where does each funded sub-trust land?
+    const finalSubTrusts = subTrusts.filter(st => st.funded).map(st => ({
+      name: st.name,
+      birthYear: st.birthYear,
+      currentAge: st.age,
+      balance: st.balance,
+      contributions: st.contributions,
+      capped: st.capped,
+      atAge18: null,
+    }));
+
+    // Project each to age 18
+    finalSubTrusts.forEach(st => {
+      if (st.currentAge >= stopAgeVal) {
+        st.atAge18 = st.balance;
+      } else {
+        const yearsLeft = stopAgeVal - st.currentAge;
+        // Balance grows at gRate, plus continued contributions at current rate for remaining years
+        // Simplification: just compound existing balance (conservative — no future contributions)
+        st.atAge18 = st.balance * Math.pow(1 + gRate, yearsLeft);
+      }
+    });
+
+    return { yearlyData, finalSubTrusts, totalYears, startCorpus, gRate, iYield, minSeedAmt, capAmt, stopAgeVal };
+  }, [corpus, growthRate, incomeYield, minSeed, fundingCap, stopAge, projectionYears, birthSchedule]);
+
+  const inputStyle = { background: "#1a1a1a", border: "1px solid #333", color: "#e0e0e0", padding: "8px 12px", borderRadius: "4px", fontSize: "14px", fontFamily: "'IBM Plex Mono', monospace", width: "160px" };
+  const smallInput = { ...inputStyle, width: 70 };
+  const birthInput = { ...inputStyle, width: 44, padding: "6px 4px", textAlign: "center", fontSize: "13px" };
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+
+  // Get unique funded sub-trusts for the detail table
+  const fundedNames = sim.finalSubTrusts.map(st => st.name);
+
+  return (
+    <div className="print-root" style={{ background: "#0d0d0d", color: "#d4d4d4", minHeight: "100vh", fontFamily: "'IBM Plex Mono', 'Courier New', monospace", fontSize: "13px", padding: "24px", lineHeight: 1.6 }}>
+      <div style={{ maxWidth: 960, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h1 style={{ fontSize: "16px", fontWeight: 600, color: "#999", marginBottom: 4, letterSpacing: "0.05em" }}>SUB-TRUST SEEDING TRACKER</h1>
+            <div style={{ fontSize: "11px", color: "#555", marginBottom: 24 }}>Irrevocable trust · income-funded sub-trusts · weighted allocation · {dateStr}</div>
+          </div>
+          <div className="no-print" style={{ display: "flex", gap: 8 }}>
+            <a href="./" style={{ background: "#1a1a1a", color: "#666", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap", textDecoration: "none" }}>← INVESTMENT CALC</a>
+            <button onClick={() => window.print()} style={{ background: "#1a1a1a", color: "#8bc34a", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }}>PRINT</button>
+          </div>
+        </div>
+
+        {/* INPUTS */}
+        <div className="no-print" style={{ marginBottom: 24 }}>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 16, alignItems: "flex-end" }}>
+            <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>MASTER CORPUS ($)</label><input style={inputStyle} type="number" value={corpus} onChange={e => setCorpus(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>GROWTH RATE (%)</label><input style={smallInput} type="number" min="1" max="20" value={growthRate} onChange={e => setGrowthRate(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>INCOME YIELD (%)</label><input style={smallInput} type="number" min="0.5" max="10" step="0.1" value={incomeYield} onChange={e => setIncomeYield(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>MIN SEED ($)</label><input style={{ ...inputStyle, width: 120 }} type="number" value={minSeed} onChange={e => setMinSeed(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>FUNDING CAP ($)</label><input style={{ ...inputStyle, width: 120 }} type="number" value={fundingCap} onChange={e => setFundingCap(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>STOP AGE</label><input style={smallInput} type="number" min="1" max="40" value={stopAge} onChange={e => setStopAge(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "10px", color: "#666", marginBottom: 3 }}>YEARS</label><input style={smallInput} type="number" min="5" max="50" value={projectionYears} onChange={e => setProjectionYears(e.target.value)} /></div>
+          </div>
+
+          <div style={{ padding: "16px 20px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "4px" }}>
+            <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 10 }}>
+              <div style={{ fontSize: "11px", color: "#666", letterSpacing: "0.05em" }}>BIRTH SCHEDULE (births per year)</div>
+              <div style={{ display: "flex", gap: 6 }}>
+                <button onClick={addYear} style={{ background: "transparent", color: "#8bc34a", border: "1px solid #333", padding: "2px 10px", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", cursor: "pointer", borderRadius: "3px" }}>+</button>
+                <button onClick={removeYear} style={{ background: "transparent", color: "#e57373", border: "1px solid #333", padding: "2px 10px", fontSize: "12px", fontFamily: "'IBM Plex Mono', monospace", cursor: "pointer", borderRadius: "3px" }}>−</button>
+              </div>
+            </div>
+            <div style={{ display: "flex", flexWrap: "wrap", gap: 6, alignItems: "center" }}>
+              {birthSchedule.map((b, i) => (
+                <div key={i} style={{ textAlign: "center" }}>
+                  <div style={{ fontSize: "9px", color: "#555", marginBottom: 2 }}>Yr {i + 1}</div>
+                  <input style={birthInput} type="number" min="0" max="5" value={b} onChange={e => handleBirthChange(i, e.target.value)} />
+                </div>
+              ))}
+            </div>
+            <div style={{ fontSize: "10px", color: "#555", marginTop: 8 }}>Total births in schedule: {birthSchedule.reduce((s, v) => s + v, 0)} · Years with no births get full income redistribution</div>
+          </div>
+        </div>
+
+        {/* SUMMARY BOX */}
+        <div className="summary-box" style={{ background: "#111", border: "1px solid #2a2a2a", padding: "16px 20px", marginBottom: 24, borderRadius: "4px" }}>
+          <div style={{ color: "#8bc34a", fontSize: "15px", fontWeight: 600 }}>
+            Master corpus: {fmtFull(sim.startCorpus)} · {sim.finalSubTrusts.length} sub-trusts funded over {birthSchedule.length} years
+          </div>
+          <div style={{ color: "#777", fontSize: "12px", marginTop: 6 }}>
+            Growth: {growthRate}% · Income yield: {incomeYield}% · Funding cap: {fmtFull(sim.capAmt)} · Stop age: {sim.stopAgeVal}
+          </div>
+          <div style={{ color: "#777", fontSize: "12px", marginTop: 2 }}>
+            Year 1 income: ~{fmtFull(Math.round(sim.startCorpus * (1 + sim.gRate) * sim.iYield))} · Year {sim.totalYears} corpus: ~{fmt(Math.round(sim.yearlyData[sim.yearlyData.length - 1]?.masterCorpus || 0))}
+          </div>
+        </div>
+
+        {/* YEAR-BY-YEAR OVERVIEW */}
+        <SectionHeader>1. YEAR-BY-YEAR OVERVIEW</SectionHeader>
+        <div style={{ overflowX: "auto", marginBottom: 8 }}>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <thead>
+              <tr>
+                {["Year", "Master Corpus", "Income", "Births", "Active Trusts", "Unnamed", "Fees Reserve"].map((h, i) => (
+                  <th key={i} style={{ padding: "4px 12px 4px 0", textAlign: "left", fontSize: "11px", color: "#555", fontWeight: 500, borderBottom: "1px solid #333" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sim.yearlyData.map((row, ri) => {
+                const show = ri < 20 || ri === sim.yearlyData.length - 1 || row.birthsThisYear > 0;
+                if (!show) return null;
+                return (
+                  <tr key={ri}>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: row.birthsThisYear > 0 ? "#8bc34a" : "#ccc", fontWeight: row.birthsThisYear > 0 ? 600 : 400, borderBottom: "1px solid #1a1a1a" }}>Yr {row.year}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#ccc", borderBottom: "1px solid #1a1a1a" }}>{fmt(Math.round(row.masterCorpus))}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#ccc", borderBottom: "1px solid #1a1a1a" }}>{fmtFull(Math.round(row.yearIncome))}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: row.birthsThisYear > 0 ? "#8bc34a" : "#555", fontWeight: row.birthsThisYear > 0 ? 600 : 400, borderBottom: "1px solid #1a1a1a" }}>{row.birthsThisYear > 0 ? row.birthsThisYear : "—"}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#ccc", borderBottom: "1px solid #1a1a1a" }}>{row.totalSubTrusts}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: row.totalPlaceholders > 0 ? "#ffb74d" : "#555", borderBottom: "1px solid #1a1a1a" }}>{row.totalPlaceholders > 0 ? row.totalPlaceholders : "—"}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#555", borderBottom: "1px solid #1a1a1a" }}>{fmtFull(Math.round(row.reserveForFees))}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* INDIVIDUAL SUB-TRUST BALANCES BY YEAR */}
+        <SectionHeader>2. SUB-TRUST BALANCES BY YEAR</SectionHeader>
+        <div style={{ fontSize: "11px", color: "#666", marginBottom: 8 }}>
+          Each column shows the balance of a funded sub-trust at year end. Green highlight = capped at {fmtFull(sim.capAmt)}.
+        </div>
+        <div style={{ overflowX: "auto", marginBottom: 8 }}>
+          <table style={{ borderCollapse: "collapse" }}>
+            <thead>
+              <tr>
+                <th style={{ padding: "4px 10px 4px 0", textAlign: "left", fontSize: "10px", color: "#555", fontWeight: 500, borderBottom: "1px solid #333", position: "sticky", left: 0, background: "#0d0d0d", zIndex: 1 }}>Year</th>
+                {fundedNames.map((name, i) => (
+                  <th key={i} style={{ padding: "4px 10px 4px 0", textAlign: "right", fontSize: "10px", color: "#555", fontWeight: 500, borderBottom: "1px solid #333", whiteSpace: "nowrap" }}>{name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sim.yearlyData.map((row, ri) => {
+                const show = ri < 20 || ri === sim.yearlyData.length - 1 || row.birthsThisYear > 0;
+                if (!show) return null;
+                const fundedSnapshots = row.subTrustSnapshots.filter(st => st.funded);
+                return (
+                  <tr key={ri}>
+                    <td style={{ padding: "3px 10px 3px 0", fontSize: "12px", color: "#888", borderBottom: "1px solid #1a1a1a", position: "sticky", left: 0, background: "#0d0d0d", zIndex: 1 }}>Yr {row.year}</td>
+                    {fundedNames.map((name, ci) => {
+                      const st = fundedSnapshots.find(s => s.name === name);
+                      if (!st) return <td key={ci} style={{ padding: "3px 10px 3px 0", fontSize: "12px", color: "#333", textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>—</td>;
+                      const isCapped = st.capped && st.balance >= sim.capAmt * 0.95;
+                      return (
+                        <td key={ci} style={{ padding: "3px 10px 3px 0", fontSize: "12px", color: isCapped ? "#8bc34a" : "#ccc", fontWeight: isCapped ? 600 : 400, textAlign: "right", borderBottom: "1px solid #1a1a1a", whiteSpace: "nowrap" }}>
+                          {fmt(Math.round(st.balance))}
+                        </td>
+                      );
+                    })}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+
+        {/* FINAL PROJECTIONS */}
+        <SectionHeader>3. PROJECTED VALUE AT AGE {stopAge}</SectionHeader>
+        <div style={{ fontSize: "11px", color: "#666", marginBottom: 8 }}>
+          "At Age {stopAge}" projects current balance forward at {growthRate}% with no additional contributions (conservative — actual will be higher if still receiving distributions).
+        </div>
+        <div style={{ overflowX: "auto", marginBottom: 8 }}>
+          <table style={{ borderCollapse: "collapse", width: "100%" }}>
+            <thead>
+              <tr>
+                {["Sub-Trust", "Born Yr", "Current Age", "Balance Now", "Contributions", "Capped?", "Projected @ " + stopAge].map((h, i) => (
+                  <th key={i} style={{ padding: "4px 12px 4px 0", textAlign: i >= 3 ? "right" : "left", fontSize: "11px", color: "#555", fontWeight: 500, borderBottom: "1px solid #333" }}>{h}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {sim.finalSubTrusts.map((st, ri) => {
+                const hitTarget = st.atAge18 >= 2000000;
+                return (
+                  <tr key={ri}>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#ccc", borderBottom: "1px solid #1a1a1a" }}>{st.name}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#888", borderBottom: "1px solid #1a1a1a" }}>{st.birthYear}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#888", borderBottom: "1px solid #1a1a1a" }}>{st.currentAge}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#ccc", textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>{fmt(Math.round(st.balance))}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: "#888", textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>{fmtFull(Math.round(st.contributions))}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: st.capped ? "#8bc34a" : "#555", borderBottom: "1px solid #1a1a1a" }}>{st.capped ? "✓ Capped" : "—"}</td>
+                    <td style={{ padding: "4px 12px 4px 0", fontSize: "13px", color: hitTarget ? "#8bc34a" : "#ffb74d", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #1a1a1a" }}>{fmt(Math.round(st.atAge18))}</td>
+                  </tr>
+                );
+              })}
+              <tr>
+                <td colSpan={3} style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, borderBottom: "1px solid #333" }}>TOTAL</td>
+                <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmt(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.balance, 0)))}</td>
+                <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmtFull(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.contributions, 0)))}</td>
+                <td style={{ padding: "6px 12px 4px 0", borderBottom: "1px solid #333" }}></td>
+                <td style={{ padding: "6px 12px 4px 0", fontSize: "13px", color: "#8bc34a", fontWeight: 600, textAlign: "right", borderBottom: "1px solid #333" }}>{fmt(Math.round(sim.finalSubTrusts.reduce((s, st) => s + st.atAge18, 0)))}</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+
+        {/* NOTES */}
+        <div style={{ marginTop: 32, fontSize: "11px", color: "#555", borderTop: "1px solid #222", paddingTop: 16 }}>
+          <div>• Master corpus grows at {growthRate}% annually. Income yield at {incomeYield}% of corpus. Principal never touched.</div>
+          <div>• Income distributed annually to sub-trusts. 2% reserved for trustee/admin fees.</div>
+          <div>• Distribution weighted by deficit — sub-trusts furthest from cap receive largest share.</div>
+          <div>• Unnamed placeholders created in years with no births, assigned to first birth in queue.</div>
+          <div>• Funding stops when sub-trust hits {fmtFull(sim.capAmt)} or child reaches age {stopAge}, whichever first.</div>
+          <div>• Capped sub-trust's share redistributes to remaining underfunded sub-trusts.</div>
+          <div>• "Projected @ {stopAge}" compounds current balance at {growthRate}% with no further contributions (conservative floor).</div>
+          <div>• This is a planning model, not legal or tax advice. Actual returns vary. Sequence-of-returns risk applies.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
