@@ -251,7 +251,10 @@ function App() {
             <h1 style={{ fontSize: "16px", fontWeight: 600, color: "#999", marginBottom: 4, letterSpacing: "0.05em" }}>INVESTMENT INCOME CALCULATOR</h1>
             <div style={{ fontSize: "11px", color: "#555", marginBottom: 24 }}>v2 · AR resident · 2026 tax law (AR 3.7% per HB 1001) · conservative yields · {dateStr}</div>
           </div>
-          <button className="no-print" onClick={() => window.print()} style={{ background: "#1a1a1a", color: "#8bc34a", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }}>PRINT</button>
+          <div className="no-print" style={{ display: "flex", gap: 8 }}>
+            <a href="trust-tracker.html" style={{ background: "#1a1a1a", color: "#8bc34a", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap", textDecoration: "none" }}>TRUST TRACKER</a>
+            <button onClick={() => window.print()} style={{ background: "#1a1a1a", color: "#8bc34a", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }}>PRINT</button>
+          </div>
         </div>
 
         <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 20 }}>
