@@ -38,13 +38,11 @@
 const { useState, useMemo, useCallback } = React;
 
 const DEFAULT_ALLOCS = [
-  { label: "S&P 500 (VOO/SPY/IVV)", shortLabel: "S&P 500", pct: 50, yield: 0.013, type: "qualified", grows: true },
-  { label: "Dividend ETF (SCHD)", shortLabel: "SCHD", pct: 15, yield: 0.035, type: "qualified", grows: false },
-  { label: "REITs (VNQ/SCHH)", shortLabel: "REITs", pct: 8, yield: 0.042, type: "reit", grows: false },
-  { label: "Municipal Bonds (AR)", shortLabel: "Munis", pct: 7, yield: 0.030, type: "muni", grows: false },
-  { label: "T-Bills", shortLabel: "T-Bills", pct: 10, yield: 0.0425, type: "tbill", grows: false },
+  { label: "S&P 500 Index (VOO/SPY/IVV)", shortLabel: "S&P 500", pct: 50, yield: 0.013, type: "qualified", grows: true },
+  { label: "Nasdaq-100 ETF (QQQ/QQQM)", shortLabel: "Nasdaq-100", pct: 25, yield: 0.006, type: "qualified", grows: true },
   { label: "Individual Stocks", shortLabel: "Stocks", pct: 5, yield: 0.02, type: "qualified", grows: true },
-  { label: "Cash Sweep / Money Market", shortLabel: "Sweep", pct: 5, yield: 0.04, type: "sweep", grows: false },
+  { label: "Arkansas Muni Ladder (AAA/AA)", shortLabel: "AR Munis", pct: 15, yield: 0.030, type: "muni", grows: false },
+  { label: "U.S. Treasury Bills", shortLabel: "T-Bills", pct: 5, yield: 0.0425, type: "tbill", grows: false },
 ];
 
 const DEFAULTS = {
@@ -88,12 +86,12 @@ function Table({ headers, rows, highlight = [] }) {
 
 function App() {
   const [mode, setMode] = useState("lottery");
-  const [jackpotInput, setJackpotInput] = useState("296000000");
+  const [jackpotInput, setJackpotInput] = useState("");
   const [cashInput, setCashInput] = useState("");
   const [useCustomCash, setUseCustomCash] = useState(false);
   const [lumpSumInput, setLumpSumInput] = useState("");
-  const [withdrawalInput, setWithdrawalInput] = useState("0");
-  const [setAsideInput, setSetAsideInput] = useState("0");
+  const [withdrawalInput, setWithdrawalInput] = useState("");
+  const [setAsideInput, setSetAsideInput] = useState("");
   const [allocs, setAllocs] = useState(DEFAULT_ALLOCS.map(a => a.pct));
   const [yields, setYields] = useState(DEFAULT_ALLOCS.map(a => (a.yield * 100).toFixed(2)));
   const [growthRateInput, setGrowthRateInput] = useState("7");
@@ -313,7 +311,7 @@ function App() {
         <Table headers={["Bucket", "Gross", "Fed Tax", "AR Tax", "After-Tax"]} rows={[...calc.buckets.map(b => [b.label, fmtFull(Math.round(b.grossIncome)), fmtFull(Math.round(b.fedTax)), fmtFull(Math.round(b.stateTax)), fmtFull(Math.round(b.afterTax))]), ["", "", "", "", ""], ["TOTAL", fmtFull(Math.round(calc.grossDivAndInt)), fmtFull(Math.round(calc.buckets.reduce((s, b) => s + b.fedTax, 0))), fmtFull(Math.round(calc.buckets.reduce((s, b) => s + b.stateTax, 0))), fmtFull(Math.round(calc.totalAfterTax))]]} highlight={[calc.buckets.length + 1]} />
 
         <SectionHeader>4. INCOME SUMMARY (YEAR 1)</SectionHeader>
-        <Table rows={[["Qualified dividend income (incl. REITs, after-tax)", fmtFull(Math.round(calc.qualAfterTax)) + "/yr", fmtFull(Math.round(calc.qualAfterTax / 12)) + "/mo"], ["Tax-free muni interest", fmtFull(Math.round(calc.muniAfterTax)) + "/yr", fmtFull(Math.round(calc.muniAfterTax / 12)) + "/mo"], ["Interest income — T-bills + Sweep (after-tax)", fmtFull(Math.round(calc.intAfterTax)) + "/yr", fmtFull(Math.round(calc.intAfterTax / 12)) + "/mo"], ["", "", ""], ["TOTAL PASSIVE INCOME (after-tax)", fmtFull(Math.round(calc.totalAfterTax)) + "/yr", fmtFull(Math.round(calc.totalAfterTax / 12)) + "/mo"]]} highlight={[4]} />
+        <Table rows={[["Qualified dividend income (after-tax)", fmtFull(Math.round(calc.qualAfterTax)) + "/yr", fmtFull(Math.round(calc.qualAfterTax / 12)) + "/mo"], ["Tax-free muni interest", fmtFull(Math.round(calc.muniAfterTax)) + "/yr", fmtFull(Math.round(calc.muniAfterTax / 12)) + "/mo"], ["Interest income — T-bills (after-tax)", fmtFull(Math.round(calc.intAfterTax)) + "/yr", fmtFull(Math.round(calc.intAfterTax / 12)) + "/mo"], ["", "", ""], ["TOTAL PASSIVE INCOME (after-tax)", fmtFull(Math.round(calc.totalAfterTax)) + "/yr", fmtFull(Math.round(calc.totalAfterTax / 12)) + "/mo"]]} highlight={[4]} />
         <div className="section-header" style={{ fontSize: "11px", color: "#666", marginTop: 8, marginBottom: 4 }}>YEAR 1 TOTAL RETURN CONTEXT</div>
         <Table rows={[["Capital growth (" + growthRateInput + "% on growth buckets)", fmtFull(Math.round(calc.yr1CapitalGrowth)), "(unrealized — stays invested)"], ["Gross dividends + interest (all buckets)", fmtFull(Math.round(calc.grossDivAndInt)), "(produces passive income above)"], ["", "", ""], ["TOTAL GROSS RETURN (Yr 1)", fmtFull(Math.round(calc.yr1TotalGrossReturn)), ""], ["After-tax passive income as % of total gross return", pct(calc.passiveIncomeAsPercent), ""]]} highlight={[3]} />
         {calc.annualWithdrawal > 0 && (<>
@@ -378,11 +376,10 @@ function App() {
           <div>• Yields are conservative current estimates. Actual varies.</div>
           <div>• 2026 tax law assumed. AR top rate 3.7% (HB 1001, signed May 6 2026, retroactive to Jan 1).</div>
           <div>• Federal estate/gift exemption $15M/person ($30M married) — OBBBA made permanent Jul 2025.</div>
-          <div>• T-bill and sweep yields move with Fed rate — verify if calc is months old.</div>
+          <div>• T-bill yield moves with Fed rate — verify if calc is months old.</div>
           <div>• Qualified dividends taxed at 23.8% fed (20% + 3.8% NIIT) + 3.7% AR.</div>
-          <div>• REIT dividends: 29.6% fed (37% × 0.80 Section 199A deduction, permanent under OBBBA) + 3.7% AR.</div>
           <div>• AR-issued municipal bonds: 0% fed + 0% AR (double tax-free). Out-of-state munis lose AR exemption.</div>
-          <div>• T-bill interest exempt from AR state tax. Sweep/MMF fully taxable.</div>
+          <div>• T-bill interest exempt from AR state tax.</div>
           <div>• Compound growth rate is user-adjustable (default 7%, long-run S&amp;P real avg).</div>
           <div>• Annual withdrawal deducted from passive income first. Shortfall (if any) pulled from growth pool.</div>
           <div>• AMI indexed at ~2.6%/yr from 2026 base of {fmtFull(AMI_2026)}. Satellite distributions capped at AMI multiplier.</div>
