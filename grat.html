@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="GRAT Calc" />
+<title>GRAT Calculator</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d0d0d; }
+  @media print {
+    body, html { background: #fff !important; color: #000 !important; }
+    .no-print { display: none !important; }
+    .print-root { background: #fff !important; color: #111 !important; padding: 0 !important; font-size: 11px !important; }
+    .print-root * { color: #111 !important; border-color: #ccc !important; }
+    .print-root .summary-box { border: 2px solid #111 !important; background: #f5f5f5 !important; }
+    .print-root .summary-box * { color: #111 !important; }
+    .print-root .highlight-row { font-weight: 700 !important; }
+    .print-root .section-header { color: #333 !important; border-bottom: 1px solid #999; padding-bottom: 2px; }
+    .print-root .disclaimer { color: #666 !important; font-size: 9px !important; }
+    .print-root table { width: 100% !important; }
+    .print-root td, .print-root th { font-size: 10px !important; padding: 2px 8px 2px 0 !important; }
+    .print-params-block { display: block !important; }
+    @page { margin: 0.5in; size: letter; }
+  }
+  .print-params-block { display: none; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+const fmt = (n) => {
+  if (Math.abs(n) >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+  if (Math.abs(n) >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M";
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+};
+const fmtFull = (n) => n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const pct = (n) => (n * 100).toFixed(2) + "%";
+
+function SectionHeader({ children }) {
+  return (<div className="section-header" style={{ fontSize: "12px", fontWeight: 600, color: "#666", marginTop: 28, marginBottom: 8, letterSpacing: "0.04em" }}>{children}</div>);
+}
+
+function Table({ headers, rows, highlight = [] }) {
+  const cellStyle = (ci, ri) => ({
+    padding: "4px 12px 4px 0", whiteSpace: "nowrap",
+    color: highlight.includes(ri) ? "#8bc34a" : "#ccc",
+    fontWeight: highlight.includes(ri) ? 600 : 400,
+    borderBottom: rows[ri]?.[0] === "" ? "none" : "1px solid #1a1a1a", fontSize: "13px",
+  });
+  return (
+    <div style={{ overflowX: "auto", marginBottom: 8 }}>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        {headers && (<thead><tr>{headers.map((h, i) => (<th key={i} style={{ padding: "4px 12px 4px 0", textAlign: "left", fontSize: "11px", color: "#555", fontWeight: 500, borderBottom: "1px solid #333" }}>{h}</th>))}</tr></thead>)}
+        <tbody>{rows.map((row, ri) => (<tr key={ri} className={highlight.includes(ri) ? "highlight-row" : ""}>{row.map((cell, ci) => (<td key={ci} style={cellStyle(ci, ri)}>{cell}</td>))}</tr>))}</tbody>
+      </table>
+    </div>
+  );
+}
+
+// Current IRS §7520 rate — update from irs.gov when the calc is stale. Aug 2026 = 5.2%.
+const CURRENT_7520 = "5.2";
+
+function App() {
+  const [seedInput, setSeedInput] = useState("2000000");
+  const [termInput, setTermInput] = useState("5");
+  const [rate7520Input, setRate7520Input] = useState(CURRENT_7520);
+  const [growthInput, setGrowthInput] = useState("10");
+  const [beneInput, setBeneInput] = useState("2");
+  const [annuityMode, setAnnuityMode] = useState("zeroout"); // "zeroout" | "custom"
+  const [customAnnuityPct, setCustomAnnuityPct] = useState("22");
+
+  const calc = useMemo(() => {
+    const P = parseFloat(seedInput) || 0;
+    const T = Math.max(parseInt(termInput) || 0, 1);
+    const r = (parseFloat(rate7520Input) || 0) / 100;
+    const g = (parseFloat(growthInput) || 0) / 100;
+    const N = Math.max(parseInt(beneInput) || 1, 1);
+
+    // Present-value factor of a level ordinary annuity at the 7520 rate (values the retained interest / the gift).
+    const pvFactor = r > 0 ? (1 - Math.pow(1 + r, -T)) / r : T;
+    // Future-value factor of a level ordinary annuity at the actual growth rate (grows the paid-out annuities forward).
+    const fvFactor = g > 0 ? (Math.pow(1 + g, T) - 1) / g : T;
+
+    // Annuity: either solve to zero out the gift, or take a user % of the seed.
+    let annuity;
+    if (annuityMode === "zeroout") {
+      annuity = pvFactor > 0 ? P / pvFactor : 0;   // amortize the seed over T years at r
+    } else {
+      annuity = P * ((parseFloat(customAnnuityPct) || 0) / 100);
+    }
+
+    // Gift value at funding = seed minus present value of the annuity stream you keep.
+    const retainedPV = annuity * pvFactor;
+    const giftRaw = P - retainedPV;                 // can go slightly negative from rounding / overpayment
+    const gift = Math.max(giftRaw, 0);
+    const zeroedOut = Math.abs(giftRaw) < P * 0.001;
+
+    // Year-by-year: balance grows at g, pays the annuity at year end.
+    const yearRows = [];
+    let bal = P;
+    for (let y = 1; y <= T; y++) {
+      const begin = bal;
+      const growth = begin * g;
+      const afterGrowth = begin + growth;
+      const paid = Math.min(annuity, Math.max(afterGrowth, 0)); // can't pay more than exists
+      bal = afterGrowth - annuity; // allow to go negative internally; display floors at 0
+      yearRows.push({ year: y, begin, growth, paid, end: bal });
+    }
+
+    // Remainder to beneficiaries = seed grown at g, minus annuities grown forward at g.
+    const remainderRaw = P * Math.pow(1 + g, T) - annuity * fvFactor;
+    const remainder = Math.max(remainderRaw, 0);
+    const perBene = remainder / N;
+
+    const totalAnnuity = annuity * T;
+    const annuityAsPctSeed = P > 0 ? annuity / P : 0;
+    const hurdleBeaten = g > r;
+
+    // Break-even sanity: a zeroed-out GRAT with g == r returns ~0. Spread over hurdle is the engine.
+    const spread = g - r;
+
+    return { P, T, r, g, N, annuity, gift, giftRaw, zeroedOut, retainedPV, yearRows, remainder, remainderRaw, perBene, totalAnnuity, annuityAsPctSeed, hurdleBeaten, spread };
+  }, [seedInput, termInput, rate7520Input, growthInput, beneInput, annuityMode, customAnnuityPct]);
+
+  const inputStyle = { background: "#1a1a1a", border: "1px solid #333", color: "#e0e0e0", padding: "8px 12px", borderRadius: "4px", fontSize: "14px", fontFamily: "'IBM Plex Mono', monospace", width: "200px" };
+  const smallInput = { ...inputStyle, width: 70 };
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+
+  return (
+    <div className="print-root" style={{ background: "#0d0d0d", color: "#d4d4d4", minHeight: "100vh", fontFamily: "'IBM Plex Mono', 'Courier New', monospace", fontSize: "13px", padding: "24px", lineHeight: 1.6 }}>
+      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h1 style={{ fontSize: "16px", fontWeight: 600, color: "#999", marginBottom: 4, letterSpacing: "0.05em" }}>GRAT CALCULATOR</h1>
+            <div style={{ fontSize: "11px", color: "#555", marginBottom: 24 }}>Grantor Retained Annuity Trust · estate freeze · §7520 {CURRENT_7520}% (Aug 2026) · {dateStr}</div>
+          </div>
+          <div className="no-print" style={{ display: "flex", gap: 8 }}>
+            <a href="./" style={{ background: "#1a1a1a", color: "#666", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap", textDecoration: "none" }}>← INVESTMENT CALC</a>
+            <a href="trust-tracker.html" style={{ background: "#1a1a1a", color: "#666", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap", textDecoration: "none" }}>TRUST TRACKER</a>
+            <button onClick={() => window.print()} style={{ background: "#1a1a1a", color: "#8bc34a", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap" }}>PRINT</button>
+          </div>
+        </div>
+
+        {/* INPUTS */}
+        <div className="no-print" style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20, alignItems: "flex-end" }}>
+          <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>SEED / CONTRIBUTION ($)</label><input style={inputStyle} type="number" value={seedInput} onChange={e => setSeedInput(e.target.value)} /></div>
+          <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>TERM (YEARS)</label><input style={smallInput} type="number" min="2" max="30" value={termInput} onChange={e => setTermInput(e.target.value)} /></div>
+          <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>§7520 HURDLE (%)</label><input style={smallInput} type="number" min="0" max="20" step="0.1" value={rate7520Input} onChange={e => setRate7520Input(e.target.value)} /></div>
+          <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>ASSUMED GROWTH (%)</label><input style={smallInput} type="number" min="0" max="40" step="0.1" value={growthInput} onChange={e => setGrowthInput(e.target.value)} /></div>
+          <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>BENEFICIARIES (#)</label><input style={smallInput} type="number" min="1" max="30" value={beneInput} onChange={e => setBeneInput(e.target.value)} /></div>
+        </div>
+
+        {/* ANNUITY MODE */}
+        <div className="no-print" style={{ display: "flex", flexWrap: "wrap", gap: 12, marginBottom: 24, alignItems: "center" }}>
+          <div style={{ display: "flex", gap: 0 }}>
+            {[["zeroout", "ZERO OUT GIFT"], ["custom", "CUSTOM ANNUITY %"]].map(([m, lbl], i) => (
+              <button key={m} onClick={() => setAnnuityMode(m)} style={{ background: annuityMode === m ? "#1a1a1a" : "transparent", color: annuityMode === m ? "#8bc34a" : "#555", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: i === 0 ? "4px 0 0 4px" : "0 4px 4px 0" }}>{lbl}</button>
+            ))}
+          </div>
+          {annuityMode === "custom" && (
+            <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+              <label style={{ fontSize: "11px", color: "#666" }}>ANNUITY / YR (% OF SEED)</label>
+              <input style={{ ...smallInput, width: 64 }} type="number" min="0" max="100" step="0.1" value={customAnnuityPct} onChange={e => setCustomAnnuityPct(e.target.value)} />
+            </div>
+          )}
+          <div style={{ fontSize: "10px", color: "#555" }}>
+            {annuityMode === "zeroout" ? "Annuity solved so the taxable gift ≈ $0 (uses no lifetime exemption)." : "You set the payout. Under-paying yourself raises the gift; that gift uses lifetime exemption."}
+          </div>
+        </div>
+
+        {/* PRINT PARAMS */}
+        <div className="print-params-block" style={{ marginBottom: 16, fontSize: "11px" }}>
+          <div><strong>Seed:</strong> {fmtFull(calc.P)} · <strong>Term:</strong> {calc.T} yrs · <strong>§7520:</strong> {rate7520Input}% · <strong>Assumed growth:</strong> {growthInput}% · <strong>Beneficiaries:</strong> {calc.N}</div>
+          <div><strong>Annuity mode:</strong> {annuityMode === "zeroout" ? "Zeroed-out" : "Custom " + customAnnuityPct + "% of seed"}</div>
+        </div>
+
+        {/* SUMMARY */}
+        <div className="summary-box" style={{ background: "#111", border: "1px solid #2a2a2a", padding: "16px 20px", marginBottom: 24, borderRadius: "4px" }}>
+          <div style={{ color: "#8bc34a", fontSize: "15px", fontWeight: 600 }}>
+            Passes to beneficiaries at term end: {fmtFull(Math.round(calc.remainder))}
+          </div>
+          <div style={{ color: "#8bc34a", fontSize: "15px", fontWeight: 600, marginTop: 4 }}>
+            {fmtFull(Math.round(calc.perBene))} each × {calc.N} · transfer-tax-free (if it clears the hurdle)
+          </div>
+          <div style={{ color: "#777", fontSize: "12px", marginTop: 6 }}>
+            Annuity back to you: {fmtFull(Math.round(calc.annuity))}/yr ({pct(calc.annuityAsPctSeed)} of seed) · {fmtFull(Math.round(calc.totalAnnuity))} total over {calc.T} yrs · Taxable gift at funding: {calc.zeroedOut ? "≈ $0" : fmtFull(Math.round(calc.gift))}
+          </div>
+        </div>
+
+        {/* HURDLE FLAG */}
+        <div style={{ fontSize: "11px", marginBottom: 20 }}>
+          {calc.hurdleBeaten
+            ? <div style={{ color: "#8bc34a" }}>✓ Assumed growth {growthInput}% beats the {rate7520Input}% hurdle by {(calc.spread * 100).toFixed(2)} pts — the spread is what transfers.</div>
+            : <div style={{ color: "#e57373" }}>⚠ Assumed growth {growthInput}% does not beat the {rate7520Input}% hurdle. Remainder ≈ $0 — the GRAT "fails," assets return to you as annuity. No harm beyond setup cost, but nothing transfers.</div>}
+          {annuityMode === "custom" && calc.giftRaw > calc.P * 0.001 && (
+            <div style={{ color: "#e0a030", marginTop: 4 }}>⚠ This annuity under-funds your retained interest — taxable gift of {fmtFull(Math.round(calc.gift))} at funding, which draws down your $15M lifetime exemption.</div>
+          )}
+        </div>
+
+        <SectionHeader>1. STRUCTURE AT FUNDING</SectionHeader>
+        <Table rows={[
+          ["Seed contributed", fmtFull(calc.P)],
+          ["Term", calc.T + " years"],
+          ["§7520 hurdle rate (IRS, valuation)", pct(calc.r)],
+          ["Annuity paid to you", fmtFull(Math.round(calc.annuity)) + "/yr", pct(calc.annuityAsPctSeed) + " of seed"],
+          ["Present value of your retained annuity", fmtFull(Math.round(calc.retainedPV))],
+          ["", ""],
+          ["Taxable gift to beneficiaries (at funding)", calc.zeroedOut ? "≈ $0" : fmtFull(Math.round(calc.gift))],
+          ["Lifetime exemption used", calc.zeroedOut ? "None" : fmtFull(Math.round(calc.gift))],
+        ]} highlight={[6]} />
+
+        <SectionHeader>2. YEAR-BY-YEAR (GROWTH {growthInput}% · ANNUITY PAID AT YEAR END)</SectionHeader>
+        <Table headers={["Year", "Begin", "Growth", "Annuity Out", "End Balance"]} rows={calc.yearRows.map(r => [
+          "Yr " + r.year,
+          fmt(Math.round(r.begin)),
+          fmt(Math.round(r.growth)),
+          "−" + fmt(Math.round(r.paid)),
+          fmt(Math.round(Math.max(r.end, 0))),
+        ])} highlight={[calc.yearRows.length - 1]} />
+        <div style={{ fontSize: "11px", color: "#666", marginBottom: 8 }}>
+          End balance in the final year = what remains after your last annuity payment = what passes to beneficiaries.
+        </div>
+
+        <SectionHeader>3. WEALTH TRANSFER RESULT</SectionHeader>
+        <Table rows={[
+          ["Seed grown at " + growthInput + "% over " + calc.T + " yrs", fmt(Math.round(calc.P * Math.pow(1 + calc.g, calc.T)))],
+          ["Less: annuities returned to you (grown fwd)", "−" + fmt(Math.round(calc.annuity * (calc.g > 0 ? (Math.pow(1 + calc.g, calc.T) - 1) / calc.g : calc.T)))],
+          ["", ""],
+          ["Remainder to beneficiaries", fmtFull(Math.round(calc.remainder))],
+          ["Per beneficiary (" + calc.N + ")", fmtFull(Math.round(calc.perBene))],
+          ["", ""],
+          ["Total annuity you received", fmtFull(Math.round(calc.totalAnnuity))],
+          ["You got back vs. seed", (calc.P > 0 ? (calc.totalAnnuity / calc.P * 100).toFixed(0) : 0) + "% of seed"],
+        ]} highlight={[3]} />
+
+        <div className="disclaimer" style={{ marginTop: 32, fontSize: "11px", color: "#555", borderTop: "1px solid #222", paddingTop: 16 }}>
+          <div>• GRAT = you put in assets, take a fixed annuity back for a set term, beneficiaries get whatever's left. It's an estate freeze: appreciation above the hurdle leaves your estate gift-tax-free.</div>
+          <div>• The §7520 rate is set by the IRS monthly (120% of the mid-term AFR, rounded to 0.2%). Aug 2026 = 5.2%. Update the input from irs.gov if this calc is more than a month old — a lower hurdle makes GRATs work harder in your favor.</div>
+          <div>• "Zero out" solves the annuity so the gift ≈ $0 and no lifetime exemption is used. This is the common structure (a "Walton" / zeroed-out GRAT).</div>
+          <div>• The engine is the SPREAD between actual growth and the hurdle. Beat 5.2% → wealth transfers. Miss it → assets come back to you, GRAT expires empty, you're out only setup/admin cost. Low downside, capped only by the assets you chose.</div>
+          <div>• There is NO 5% minimum annuity for a GRAT. The 5% floor is a CRT (charitable remainder trust) rule — different vehicle. GRAT annuities can be level or step up to 20%/yr; this tool models a level annuity, end of year.</div>
+          <div>• Short terms (2–3 yrs) reduce mortality risk (if you die during the term, the assets snap back into your estate). "Rolling" short GRATs are a common way to manage that.</div>
+          <div>• GST wrinkle: you generally can't allocate generation-skipping exemption until the term ends (ETIP rule), so GRATs are awkward for skipping straight to grandkids / nieces / nephews. They pass best to children — who can then re-gift or fund the next-gen trusts. For direct multigenerational skips, the dynasty-trust route is cleaner.</div>
+          <div>• Assumed growth is a straight-line placeholder. Real returns vary year to year (sequence risk); a bad early year inside the term can sink an otherwise-good GRAT.</div>
+          <div>• Not legal or tax advice. Values are estimates. Confirm structure with an estate attorney before funding.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
