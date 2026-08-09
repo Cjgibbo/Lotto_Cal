@@ -1,0 +1,312 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Estate Dashboard" />
+<title>Estate Tax Dashboard</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d0d0d; }
+  @media print {
+    body, html { background: #fff !important; color: #000 !important; }
+    .no-print { display: none !important; }
+    .print-root { background: #fff !important; color: #111 !important; padding: 0 !important; font-size: 11px !important; }
+    .print-root * { color: #111 !important; border-color: #ccc !important; }
+    .print-root .summary-box { border: 2px solid #111 !important; background: #f5f5f5 !important; }
+    .print-root .summary-box * { color: #111 !important; }
+    .print-root .highlight-row { font-weight: 700 !important; }
+    .print-root .section-header { color: #333 !important; border-bottom: 1px solid #999; padding-bottom: 2px; }
+    .print-root .disclaimer { color: #666 !important; font-size: 9px !important; }
+    .print-root table { width: 100% !important; }
+    .print-root td, .print-root th { font-size: 10px !important; padding: 2px 8px 2px 0 !important; }
+    .print-params-block { display: block !important; }
+    @page { margin: 0.5in; size: letter; }
+  }
+  .print-params-block { display: none; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo, useCallback } = React;
+
+// ── Constants ────────────────────────────────────────────────────────────
+const E_SINGLE = 15e6;      // OBBBA federal exemption per person, permanent 2026
+const E_MARRIED = 30e6;
+const ESTATE_RATE = 0.40;   // top federal estate/gift rate
+// Arkansas has NO estate tax — federal only. Clean.
+
+const fmt = (n) => {
+  if (Math.abs(n) >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+  if (Math.abs(n) >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M";
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+};
+const fmtFull = (n) => n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+const pct = (n) => (n * 100).toFixed(1) + "%";
+
+function SectionHeader({ children }) {
+  return (<div className="section-header" style={{ fontSize: "12px", fontWeight: 600, color: "#666", marginTop: 28, marginBottom: 8, letterSpacing: "0.04em" }}>{children}</div>);
+}
+
+function Table({ headers, rows, highlight = [] }) {
+  const cellStyle = (ci, ri) => ({
+    padding: "4px 12px 4px 0", whiteSpace: "nowrap",
+    color: highlight.includes(ri) ? "#8bc34a" : "#ccc",
+    fontWeight: highlight.includes(ri) ? 600 : 400,
+    borderBottom: rows[ri]?.[0] === "" ? "none" : "1px solid #1a1a1a", fontSize: "13px",
+  });
+  return (
+    <div style={{ overflowX: "auto", marginBottom: 8 }}>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        {headers && (<thead><tr>{headers.map((h, i) => (<th key={i} style={{ padding: "4px 12px 4px 0", textAlign: "left", fontSize: "11px", color: "#555", fontWeight: 500, borderBottom: "1px solid #333" }}>{h}</th>))}</tr></thead>)}
+        <tbody>{rows.map((row, ri) => (<tr key={ri} className={highlight.includes(ri) ? "highlight-row" : ""}>{row.map((cell, ci) => (<td key={ci} style={cellStyle(ci, ri)}>{cell}</td>))}</tr>))}</tbody>
+      </table>
+    </div>
+  );
+}
+
+// Meter bar — shows a filled portion against a cap.
+function Meter({ label, used, cap, color, sub }) {
+  const frac = cap > 0 ? Math.min(used / cap, 1) : 0;
+  const over = used > cap;
+  return (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: "11px", color: "#888", marginBottom: 4 }}>
+        <span>{label}</span>
+        <span style={{ color: over ? "#e57373" : "#ccc" }}>{fmt(used)} / {fmt(cap)}{over ? " ⚠" : ""}</span>
+      </div>
+      <div style={{ height: 8, background: "#1a1a1a", borderRadius: 4, overflow: "hidden", border: "1px solid #2a2a2a" }}>
+        <div style={{ width: (frac * 100) + "%", height: "100%", background: over ? "#e57373" : color, transition: "width 0.15s" }} />
+      </div>
+      {sub && <div style={{ fontSize: "10px", color: "#555", marginTop: 3 }}>{sub}</div>}
+    </div>
+  );
+}
+
+// ── Core model ───────────────────────────────────────────────────────────
+// remaining estate grows to horizon (frozen assets grow OUTSIDE the estate).
+// exemption held flat in real terms (6% real convention).
+function runModel({ G, E, dynasty, grat, charity, years, g }) {
+  const totalFrozen = dynasty + grat + charity;
+  const remaining = Math.max(G - totalFrozen, 0);
+  const exemptionConsumed = Math.min(dynasty, E);        // only the dynasty GIFT eats exemption
+  const dynastyTaxableGift = Math.max(dynasty - E, 0);   // dynasty above exemption = taxable gift NOW
+  const exemptionRemaining = E - exemptionConsumed;
+  const grown = remaining * Math.pow(1 + g, years);
+  const taxableEstate = Math.max(grown - exemptionRemaining, 0);
+  const estateTax = ESTATE_RATE * taxableEstate;
+  const lifetimeGiftTax = ESTATE_RATE * dynastyTaxableGift;
+  const totalTax = estateTax + lifetimeGiftTax;
+  return { remaining, grown, exemptionConsumed, exemptionRemaining, dynastyTaxableGift, taxableEstate, estateTax, lifetimeGiftTax, totalTax, totalFrozen };
+}
+
+function App() {
+  const [estateInput, setEstateInput] = useState("");
+  const [married, setMarried] = useState(false);
+  const [projected, setProjected] = useState(true);
+  const [currentAge, setCurrentAge] = useState("40");
+  const [targetAge, setTargetAge] = useState("85");
+  const [realRate, setRealRate] = useState("6");
+  const [dynastyInput, setDynastyInput] = useState("0");
+  const [gratInput, setGratInput] = useState("0");
+  const [charityInput, setCharityInput] = useState("0");
+
+  const E = married ? E_MARRIED : E_SINGLE;
+  const G = parseFloat(estateInput) || 0;
+  const g = (parseFloat(realRate) || 0) / 100;
+  const yearsRaw = (parseInt(targetAge) || 0) - (parseInt(currentAge) || 0);
+  const years = projected ? Math.max(yearsRaw, 0) : 0;
+  const dynasty = Math.min(parseFloat(dynastyInput) || 0, G);
+  const grat = parseFloat(gratInput) || 0;
+  const charity = parseFloat(charityInput) || 0;
+
+  const calc = useMemo(() => {
+    const params = { G, E, dynasty, grat, charity, years, g };
+    const now = runModel({ ...params, years: 0 });      // static, today
+    const future = runModel(params);                    // at horizon (years may be 0)
+    const noFreeze = runModel({ ...params, dynasty: 0, grat: 0, charity: 0 });
+
+    // Per-lever delta: zero each lever individually, hold others, measure tax change at horizon.
+    const withAll = future.totalTax;
+    const dDynasty = runModel({ ...params, dynasty: 0 }).totalTax - withAll;
+    const dGrat = runModel({ ...params, grat: 0 }).totalTax - withAll;
+    const dCharity = runModel({ ...params, charity: 0 }).totalTax - withAll;
+
+    const freezeSaving = noFreeze.totalTax - future.totalTax;
+    const effRate = future.grown > 0 ? future.totalTax / future.grown : 0;
+    return { now, future, noFreeze, dDynasty, dGrat, dCharity, freezeSaving, effRate };
+  }, [G, E, dynasty, grat, charity, years, g]);
+
+  const inputStyle = { background: "#1a1a1a", border: "1px solid #333", color: "#e0e0e0", padding: "8px 12px", borderRadius: "4px", fontSize: "14px", fontFamily: "'IBM Plex Mono', monospace", width: "200px" };
+  const smallInput = { ...inputStyle, width: 70 };
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+
+  const navLink = { background: "#1a1a1a", color: "#666", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap", textDecoration: "none" };
+
+  // Lever slider row
+  const Lever = ({ label, val, setVal, hint, exemptionNote }) => (
+    <div style={{ marginBottom: 14 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
+        <div style={{ width: 130, fontSize: "11px", color: "#888", flexShrink: 0 }}>{label}</div>
+        <input type="range" min="0" max={Math.max(G, 1e6)} step={100000} value={Math.min(parseFloat(val) || 0, Math.max(G, 1e6))} onChange={e => setVal(e.target.value)} style={{ flex: 1, minWidth: 120, accentColor: "#8bc34a", height: 4 }} />
+        <input type="number" step="100000" value={val} onChange={e => setVal(e.target.value)} style={{ ...inputStyle, width: 130, fontSize: "12px", padding: "4px 8px" }} />
+      </div>
+      <div style={{ fontSize: "10px", color: "#555", marginLeft: 140, marginTop: 2 }}>{hint} · <span style={{ color: exemptionNote.includes("Consumes") ? "#c99" : "#7a9" }}>{exemptionNote}</span></div>
+    </div>
+  );
+
+  const over = calc.future.taxableEstate > 0;
+  const verdict = !G ? "Enter your estate to model."
+    : !over ? (projected ? "Under the exemption at your target age — even grown, freezes are optional." : "Under the exemption today. Turn on projection to see if growth pushes you over.")
+    : (calc.freezeSaving > 0 ? "Over the line. Freezes are capturing " + fmt(calc.freezeSaving) + " of tax." : "Over the line — and your current freezes save nothing. See per-lever deltas below.");
+
+  return (
+    <div className="print-root" style={{ background: "#0d0d0d", color: "#d4d4d4", minHeight: "100vh", fontFamily: "'IBM Plex Mono', 'Courier New', monospace", fontSize: "13px", padding: "24px", lineHeight: 1.6 }}>
+      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h1 style={{ fontSize: "16px", fontWeight: 600, color: "#999", marginBottom: 4, letterSpacing: "0.05em" }}>ESTATE TAX DASHBOARD</h1>
+            <div style={{ fontSize: "11px", color: "#555", marginBottom: 24 }}>Federal only · AR has no estate tax · $15M/$30M exemption (OBBBA) · 40% top rate · {dateStr}</div>
+          </div>
+          <div className="no-print" style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <a href="./" style={navLink}>← INVESTMENT CALC</a>
+            <a href="trust-tracker.html" style={navLink}>TRUST TRACKER</a>
+            <a href="grat.html" style={navLink}>GRAT</a>
+            <button onClick={() => window.print()} style={{ ...navLink, color: "#8bc34a" }}>PRINT</button>
+          </div>
+        </div>
+
+        {/* Inputs */}
+        <div className="no-print" style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 20, alignItems: "flex-end" }}>
+          <div>
+            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>GROSS ESTATE ($) — net take-home</label>
+            <input style={inputStyle} type="number" value={estateInput} onChange={e => setEstateInput(e.target.value)} placeholder="from lottery calc NET line" />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>FILING</label>
+            <div style={{ display: "flex" }}>
+              {[["single", "SINGLE $15M"], ["married", "MARRIED $30M"]].map(([k, lbl], i) => (
+                <button key={k} onClick={() => setMarried(k === "married")} style={{ background: (married === (k === "married")) ? "#1a1a1a" : "transparent", color: (married === (k === "married")) ? "#8bc34a" : "#555", border: "1px solid #333", padding: "8px 12px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", cursor: "pointer", borderRadius: i === 0 ? "4px 0 0 4px" : "0 4px 4px 0" }}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>MODE</label>
+            <div style={{ display: "flex" }}>
+              {[["static", "STATIC"], ["proj", "PROJECT"]].map(([k, lbl], i) => (
+                <button key={k} onClick={() => setProjected(k === "proj")} style={{ background: (projected === (k === "proj")) ? "#1a1a1a" : "transparent", color: (projected === (k === "proj")) ? "#8bc34a" : "#555", border: "1px solid #333", padding: "8px 12px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", cursor: "pointer", borderRadius: i === 0 ? "4px 0 0 4px" : "0 4px 4px 0" }}>{lbl}</button>
+              ))}
+            </div>
+          </div>
+          {projected && (<>
+            <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>CURRENT AGE</label><input style={smallInput} type="number" value={currentAge} onChange={e => setCurrentAge(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>AT AGE</label><input style={smallInput} type="number" value={targetAge} onChange={e => setTargetAge(e.target.value)} /></div>
+            <div><label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>REAL RATE (%)</label><input style={smallInput} type="number" min="0" max="15" step="0.5" value={realRate} onChange={e => setRealRate(e.target.value)} /></div>
+          </>)}
+        </div>
+
+        {/* Levers */}
+        <div className="no-print" style={{ marginBottom: 24, padding: "16px 20px", background: "#111", border: "1px solid #2a2a2a", borderRadius: "4px" }}>
+          <div style={{ fontSize: "11px", color: "#666", letterSpacing: "0.05em", marginBottom: 14 }}>FREEZE LEVERS — drag to pull assets out of the estate</div>
+          <Lever label="Dynasty trust gift" val={dynastyInput} setVal={setDynastyInput} hint="removes from estate · from Trust Tracker corpus" exemptionNote="Consumes exemption 1:1" />
+          <Lever label="GRAT remainder" val={gratInput} setVal={setGratInput} hint="appreciation frozen out · from GRAT tool remainder" exemptionNote="Exemption-free (zeroed-out)" />
+          <Lever label="Charitable / CRT" val={charityInput} setVal={setCharityInput} hint="to 501(c)(3) or CRT remainder" exemptionNote="Exemption-free (charitable deduction)" />
+        </div>
+
+        {/* Print params */}
+        <div className="print-params-block" style={{ marginBottom: 16, fontSize: "11px" }}>
+          <div><strong>Estate:</strong> {fmtFull(G)} · <strong>Filing:</strong> {married ? "Married $30M" : "Single $15M"} · <strong>Mode:</strong> {projected ? "Project to age " + targetAge + " @ " + realRate + "% real" : "Static (today)"}</div>
+          <div><strong>Levers:</strong> Dynasty {fmtFull(dynasty)} · GRAT {fmtFull(grat)} · Charity {fmtFull(charity)}</div>
+        </div>
+
+        {/* Headline */}
+        <div className="summary-box" style={{ background: "#111", border: "1px solid #2a2a2a", padding: "16px 20px", marginBottom: 20, borderRadius: "4px" }}>
+          <div style={{ color: over ? "#e57373" : "#8bc34a", fontSize: "15px", fontWeight: 600 }}>
+            {projected ? "Estate tax at age " + targetAge + ": " : "Estate tax today: "}{fmtFull(Math.round(calc.future.totalTax))}
+          </div>
+          <div style={{ color: "#8bc34a", fontSize: "13px", fontWeight: 500, marginTop: 4 }}>
+            {projected && <>Estate grows to {fmt(calc.future.grown)} · </>}Effective rate on estate: {pct(calc.effRate)}
+          </div>
+          <div style={{ color: "#777", fontSize: "12px", marginTop: 6 }}>{verdict}</div>
+        </div>
+
+        {/* Meters */}
+        <SectionHeader>1. CAPACITY METERS</SectionHeader>
+        <div style={{ marginBottom: 8 }}>
+          <Meter label="Estate removed by freezes" used={calc.future.totalFrozen} cap={G || 1} color="#8bc34a" sub={fmt(calc.future.remaining) + " left in estate before growth"} />
+          <Meter label="Lifetime exemption consumed" used={calc.future.exemptionConsumed} cap={E} color="#5a8dd0" sub={fmt(calc.future.exemptionRemaining) + " exemption still shielding the death estate" + (calc.future.dynastyTaxableGift > 0 ? " · " + fmt(calc.future.dynastyTaxableGift) + " over = taxable gift now" : "")} />
+        </div>
+        <div style={{ fontSize: "10px", color: "#555", marginTop: 4 }}>Two separate meters on purpose: a GRAT or charitable transfer removes estate without touching exemption. Only the dynasty gift draws the blue meter down.</div>
+
+        {/* Waterfall */}
+        <SectionHeader>2. WATERFALL {projected ? "(AT AGE " + targetAge + ")" : "(TODAY)"}</SectionHeader>
+        <Table rows={[
+          ["Gross estate today", fmtFull(Math.round(G))],
+          ["  └ Frozen out (dynasty + GRAT + charity)", "−" + fmtFull(Math.round(calc.future.totalFrozen))],
+          ["Remaining in estate", fmtFull(Math.round(calc.future.remaining))],
+          ...(projected ? [["  └ Grown " + years + " yrs @ " + realRate + "% real", fmtFull(Math.round(calc.future.grown))]] : []),
+          ["", ""],
+          ["Exemption shielding death estate", "−" + fmtFull(Math.round(calc.future.exemptionRemaining))],
+          ["Taxable estate", fmtFull(Math.round(calc.future.taxableEstate))],
+          ["Estate tax @ 40%", fmtFull(Math.round(calc.future.estateTax))],
+          ...(calc.future.lifetimeGiftTax > 0 ? [["Gift tax now (dynasty over exemption)", fmtFull(Math.round(calc.future.lifetimeGiftTax))]] : []),
+          ["", ""],
+          ["TOTAL TAX", fmtFull(Math.round(calc.future.totalTax))],
+        ]} highlight={[projected ? 10 : 9]} />
+
+        {/* Static vs projected */}
+        {projected && (<>
+          <SectionHeader>3. STATIC vs PROJECTED — what the freeze captures</SectionHeader>
+          <Table headers={["", "Today (static)", "At age " + targetAge]} rows={[
+            ["Tax with NO freezes", fmtFull(Math.round(calc.noFreeze.totalTax)), fmtFull(Math.round(runModelHelper(G, E, 0, 0, 0, years, g)))],
+            ["Tax with current freezes", fmtFull(Math.round(calc.now.totalTax)), fmtFull(Math.round(calc.future.totalTax))],
+            ["", "", ""],
+            ["Freeze saving", fmt(Math.round(calc.noFreeze.totalTax - calc.now.totalTax)), fmt(Math.round(calc.freezeSaving))],
+          ]} highlight={[3]} />
+          <div style={{ fontSize: "10px", color: "#555", marginTop: 4 }}>The gap between the two columns is the entire reason to freeze: you're locking assets out before they compound. Static understates every freeze.</div>
+        </>)}
+
+        {/* Per-lever delta */}
+        <SectionHeader>{projected ? "4" : "3"}. PER-LEVER DELTA {projected ? "(AT AGE " + targetAge + ")" : "(TODAY)"}</SectionHeader>
+        <Table headers={["Lever", "Amount", "Tax saved", "Per $1 removed"]} rows={[
+          ["Dynasty trust gift", fmtFull(Math.round(dynasty)), fmt(Math.round(calc.dDynasty)), dynasty > 0 ? pct(calc.dDynasty / dynasty) : "—"],
+          ["GRAT remainder", fmtFull(Math.round(grat)), fmt(Math.round(calc.dGrat)), grat > 0 ? pct(calc.dGrat / grat) : "—"],
+          ["Charitable / CRT", fmtFull(Math.round(charity)), fmt(Math.round(calc.dCharity)), charity > 0 ? pct(calc.dCharity / charity) : "—"],
+        ]} highlight={[]} />
+        <div style={{ fontSize: "10px", color: "#555", marginTop: 4 }}>
+          "Per $1 removed" is the honest efficiency number. Watch for the dynasty gift showing a LOWER rate than GRAT/charity — that's the exemption cost: a lifetime gift spends exemption you'd otherwise use at death, so statically it can save near $0. Its value is almost entirely in freezing future growth (projected mode).
+        </div>
+
+        {/* Disclaimer */}
+        <div className="disclaimer" style={{ marginTop: 32, fontSize: "11px", color: "#555", borderTop: "1px solid #222", paddingTop: 16 }}>
+          <div>• Federal estate/gift exemption $15M/person, $30M married — OBBBA, permanent 2026. Indexed to inflation; held flat here because the model runs in REAL dollars (6% real). If you switch to nominal returns, the exemption should grow too.</div>
+          <div>• Top federal estate & gift rate 40%. Arkansas has no estate or inheritance tax — this is federal-only.</div>
+          <div>• Frozen assets are assumed to grow OUTSIDE the estate at the same real rate. That's the freeze thesis: appreciation after transfer escapes the 40%.</div>
+          <div>• Dynasty gift consumes lifetime exemption 1:1; amount above exemption is a taxable gift at 40% in the funding year. GRAT (zeroed-out) and charitable transfers remove estate WITHOUT consuming exemption.</div>
+          <div>• GRAT remainder = the appreciation above the §7520 hurdle that passes to heirs (pull the number from the GRAT tool). The annuity returns to your estate and is NOT frozen — only enter the remainder here.</div>
+          <div>• This models federal transfer tax only. It ignores GST tax, state situs of the trust, step-up in basis, portability elections, and the income-tax tradeoffs of gifting appreciated assets (no step-up) vs. holding to death. Not legal or tax advice.</div>
+          <div>• Scenario modeler: levers start at zero. Wire real figures from the Trust Tracker (dynasty corpus) and GRAT tool (remainder) once the plan is locked with the attorney.</div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// helper for the no-freeze projected column
+function runModelHelper(G, E, dynasty, grat, charity, years, g) {
+  return runModel({ G, E, dynasty, grat, charity, years, g }).totalTax;
+}
+
+const root = ReactDOM.createRoot(document.getElementById("root"));
+root.render(<App />);
+</script>
+</body>
+</html>
