@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+<meta name="apple-mobile-web-app-title" content="Leverage Calc" />
+<title>Leverage Calculator</title>
+<link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet" />
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0d0d0d; }
+  @media print {
+    body, html { background: #fff !important; color: #000 !important; }
+    .no-print { display: none !important; }
+    .print-root { background: #fff !important; color: #111 !important; padding: 0 !important; font-size: 11px !important; }
+    .print-root * { color: #111 !important; border-color: #ccc !important; }
+    .print-root .summary-box { border: 2px solid #111 !important; background: #f5f5f5 !important; }
+    .print-root .summary-box * { color: #111 !important; }
+    .print-root .highlight-row { font-weight: 700 !important; }
+    .print-root .section-header { color: #333 !important; border-bottom: 1px solid #999; padding-bottom: 2px; }
+    .print-root .disclaimer { color: #666 !important; font-size: 9px !important; }
+    .print-root table { width: 100% !important; }
+    .print-root td, .print-root th { font-size: 10px !important; padding: 2px 8px 2px 0 !important; }
+    .print-params-block { display: block !important; }
+    @page { margin: 0.5in; size: letter; }
+  }
+  .print-params-block { display: none; }
+</style>
+<script crossorigin src="https://unpkg.com/react@18.2.0/umd/react.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/react-dom@18.2.0/umd/react-dom.production.min.js"></script>
+<script crossorigin src="https://unpkg.com/@babel/standalone@7.23.10/babel.min.js"></script>
+</head>
+<body>
+<div id="root"></div>
+<script type="text/babel">
+const { useState, useMemo } = React;
+
+// ---------- Formatting helpers ----------
+const fmt = (n) => {
+  if (!isFinite(n)) return "—";
+  if (Math.abs(n) >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
+  if (Math.abs(n) >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M";
+  return n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 });
+};
+const fmtFull = (n) => isFinite(n) ? n.toLocaleString("en-US", { style: "currency", currency: "USD", maximumFractionDigits: 0 }) : "—";
+const pct = (n) => isFinite(n) ? (n * 100).toFixed(1) + "%" : "—";
+
+// ---------- Loan amortization ----------
+// Monthly payment for a fully-amortizing loan
+const monthlyPMT = (principal, annualRate, termYears) => {
+  const r = annualRate / 12;
+  const n = termYears * 12;
+  if (r === 0) return principal / n;
+  return principal * r / (1 - Math.pow(1 + r, -n));
+};
+
+// ---------- Components ----------
+function SectionHeader({ children }) {
+  return (<div className="section-header" style={{ fontSize: "12px", fontWeight: 600, color: "#666", marginTop: 28, marginBottom: 8, letterSpacing: "0.04em" }}>{children}</div>);
+}
+
+function Table({ headers, rows, highlight = [] }) {
+  const cellStyle = (ci, ri) => ({
+    padding: "4px 12px 4px 0", whiteSpace: "nowrap",
+    color: highlight.includes(ri) ? "#8bc34a" : "#ccc",
+    fontWeight: highlight.includes(ri) ? 600 : 400,
+    borderBottom: rows[ri]?.[0] === "" ? "none" : "1px solid #1a1a1a", fontSize: "13px",
+  });
+  return (
+    <div style={{ overflowX: "auto", marginBottom: 8 }}>
+      <table style={{ borderCollapse: "collapse", width: "100%" }}>
+        {headers && (<thead><tr>{headers.map((h, i) => (<th key={i} style={{ padding: "4px 12px 4px 0", textAlign: "left", fontSize: "11px", color: "#555", fontWeight: 500, borderBottom: "1px solid #333" }}>{h}</th>))}</tr></thead>)}
+        <tbody>{rows.map((row, ri) => (<tr key={ri} className={highlight.includes(ri) ? "highlight-row" : ""}>{row.map((cell, ci) => (<td key={ci} style={cellStyle(ci, ri)}>{cell}</td>))}</tr>))}</tbody>
+      </table>
+    </div>
+  );
+}
+
+// ---------- Defaults ----------
+const DEFAULTS = {
+  business: {
+    cashDown: 500000,
+    targetTakeHome: 100000,
+    downPct: 10,        // SBA 7(a) standard
+    ratePct: 10.0,      // SBA 7(a) conservative planning rate, Aug 2026
+    termYears: 10,      // SBA 7(a) goodwill/business acquisition max
+    multiple: 3.0,      // SDE multiple, Main Street conservative
+    reservePct: 15,     // % of cash-flow-after-debt kept in business
+    taxPct: 35,         // combined federal + AR effective on pass-through income
+  },
+  realestate: {
+    cashDown: 250000,
+    targetTakeHome: 40000,
+    downPct: 25,        // conventional investment property
+    ratePct: 7.5,       // investment property 30-yr fixed, Aug 2026
+    termYears: 30,
+    capPct: 6.5,        // cap rate on purchase
+    reservePct: 15,     // % of cash-flow-after-debt kept for capex/vacancy
+    taxPct: 15,         // effective after depreciation shelter
+  },
+};
+
+// ---------- Core math ----------
+// Returns per-$1-of-cash-down metrics + absolute values for a given cashDown
+function computeDeal({ mode, cashDown, downPct, ratePct, termYears, multiple, capPct, reservePct, taxPct }) {
+  const d = downPct / 100;
+  const r = ratePct / 100;
+  const reserve = reservePct / 100;
+  const tax = taxPct / 100;
+
+  // Per-$1-of-cash-down ratios
+  const purchasePerDollar = 1 / d;
+  const loanPerDollar = (1 - d) / d;
+  const annualDSPerDollar = 12 * monthlyPMT(loanPerDollar, r, termYears);
+
+  // Top-line income (SDE for business, NOI for RE)
+  let incomePerDollar;
+  if (mode === "business") {
+    incomePerDollar = purchasePerDollar / multiple;
+  } else {
+    incomePerDollar = purchasePerDollar * (capPct / 100);
+  }
+
+  const cfadPerDollar = incomePerDollar - annualDSPerDollar;
+  const reserveAmtPerDollar = cfadPerDollar > 0 ? cfadPerDollar * reserve : 0;
+  const preTaxPerDollar = cfadPerDollar - reserveAmtPerDollar;
+  const afterTaxPerDollar = preTaxPerDollar > 0 ? preTaxPerDollar * (1 - tax) : preTaxPerDollar;
+
+  // Absolute values scaled by cashDown
+  const purchase = cashDown * purchasePerDollar;
+  const loan = cashDown * loanPerDollar;
+  const monthlyPI = monthlyPMT(loan, r, termYears);
+  const annualDS = 12 * monthlyPI;
+  const income = cashDown * incomePerDollar;
+  const cfad = income - annualDS;
+  const reserveAmt = cfad > 0 ? cfad * reserve : 0;
+  const preTax = cfad - reserveAmt;
+  const afterTax = preTax > 0 ? preTax * (1 - tax) : preTax;
+
+  const coc = cashDown > 0 ? preTax / cashDown : 0;
+  const dscr = annualDS > 0 ? income / annualDS : 0;
+  const paybackYears = afterTax > 0 ? cashDown / afterTax : Infinity;
+
+  return {
+    purchase, loan, monthlyPI, annualDS, income, cfad, reserveAmt, preTax, afterTax,
+    coc, dscr, paybackYears,
+    // per-$1 for reverse solve
+    afterTaxPerDollar, preTaxPerDollar, cfadPerDollar,
+  };
+}
+
+// ---------- App ----------
+function App() {
+  const [mode, setMode] = useState("business");
+  const [direction, setDirection] = useState("forward");
+
+  // Independent state per mode so switching preserves inputs
+  const [bizInputs, setBizInputs] = useState(DEFAULTS.business);
+  const [reInputs, setReInputs] = useState(DEFAULTS.realestate);
+
+  const inputs = mode === "business" ? bizInputs : reInputs;
+  const setInputs = mode === "business" ? setBizInputs : setReInputs;
+  const setField = (field, val) => setInputs({ ...inputs, [field]: val === "" ? "" : parseFloat(val) });
+
+  // Reverse-solve: given target take-home, compute required cash down
+  const solvedCashDown = useMemo(() => {
+    if (direction !== "reverse") return null;
+    const probe = computeDeal({ ...inputs, mode, cashDown: 1 });
+    if (probe.afterTaxPerDollar <= 0) return null;
+    return (parseFloat(inputs.targetTakeHome) || 0) / probe.afterTaxPerDollar;
+  }, [direction, mode, inputs]);
+
+  const effectiveCashDown = direction === "reverse"
+    ? (solvedCashDown || 0)
+    : (parseFloat(inputs.cashDown) || 0);
+
+  const calc = useMemo(() => computeDeal({ ...inputs, mode, cashDown: effectiveCashDown }), [mode, inputs, effectiveCashDown]);
+
+  // Styling
+  const inputStyle = { background: "#1a1a1a", border: "1px solid #333", color: "#e0e0e0", padding: "8px 12px", borderRadius: "4px", fontSize: "14px", fontFamily: "'IBM Plex Mono', monospace", width: "180px" };
+  const smallInput = { ...inputStyle, width: 80 };
+  const navLink = { background: "#1a1a1a", color: "#666", border: "1px solid #333", padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace", letterSpacing: "0.05em", cursor: "pointer", borderRadius: "4px", whiteSpace: "nowrap", textDecoration: "none" };
+  const toggleBtn = (active, isFirst, isLast) => ({
+    background: active ? "#1a1a1a" : "transparent",
+    color: active ? "#8bc34a" : "#555",
+    border: "1px solid #333",
+    padding: "6px 16px", fontSize: "11px", fontFamily: "'IBM Plex Mono', monospace",
+    letterSpacing: "0.05em", cursor: "pointer",
+    borderRadius: isFirst ? "4px 0 0 4px" : (isLast ? "0 4px 4px 0" : "0"),
+  });
+
+  const now = new Date();
+  const dateStr = now.toLocaleDateString("en-US", { year: "numeric", month: "long", day: "numeric" });
+
+  // Determine failure state
+  const dealFails = calc.cfad <= 0 || (direction === "reverse" && !solvedCashDown);
+  const modeName = mode === "business" ? "BUSINESS" : "REAL ESTATE";
+  const incomeName = mode === "business" ? "SDE" : "NOI";
+  const incomeSubLabel = mode === "business" ? "Seller's Discretionary Earnings" : "Net Operating Income (after opex, before debt)";
+
+  // Bottom line
+  const bottomLine = direction === "reverse"
+    ? (solvedCashDown
+        ? `${fmt(inputs.targetTakeHome)}/year take-home → needs ${fmt(solvedCashDown)} cash down`
+        : `Not achievable — deal cash flow negative at these terms.`)
+    : (calc.afterTax > 0
+        ? `${fmt(calc.afterTax)}/year net take-home (~${fmt(calc.afterTax / 12)}/month) on ${fmt(effectiveCashDown)} cash down`
+        : `Cash flow negative — deal doesn't work at these terms.`);
+
+  const bottomColor = (direction === "reverse" ? !!solvedCashDown : calc.afterTax > 0) ? "#8bc34a" : "#e57373";
+
+  return (
+    <div className="print-root" style={{ background: "#0d0d0d", color: "#d4d4d4", minHeight: "100vh", fontFamily: "'IBM Plex Mono', 'Courier New', monospace", fontSize: "13px", padding: "24px", lineHeight: 1.6 }}>
+      <div style={{ maxWidth: 720, margin: "0 auto" }}>
+        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+          <div>
+            <h1 style={{ fontSize: "16px", fontWeight: 600, color: "#999", marginBottom: 4, letterSpacing: "0.05em" }}>LEVERAGE CALCULATOR</h1>
+            <div style={{ fontSize: "11px", color: "#555", marginBottom: 24 }}>Business acquisition · Investment real estate · Aug 2026 rates · {dateStr}</div>
+          </div>
+          <div className="no-print" style={{ display: "flex", gap: 8, flexWrap: "wrap", justifyContent: "flex-end" }}>
+            <a href="./" style={navLink}>← INVESTMENT CALC</a>
+            <a href="trust-tracker.html" style={navLink}>TRUST TRACKER</a>
+            <a href="grat.html" style={navLink}>GRAT</a>
+            <a href="estate.html" style={navLink}>ESTATE</a>
+            <button onClick={() => window.print()} style={{ ...navLink, color: "#8bc34a" }}>PRINT</button>
+          </div>
+        </div>
+
+        {/* Mode toggle */}
+        <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 12 }}>
+          <button onClick={() => setMode("business")} style={toggleBtn(mode === "business", true, false)}>BUSINESS</button>
+          <button onClick={() => setMode("realestate")} style={toggleBtn(mode === "realestate", false, true)}>REAL ESTATE</button>
+        </div>
+
+        {/* Direction toggle */}
+        <div className="no-print" style={{ display: "flex", gap: 0, marginBottom: 20 }}>
+          <button onClick={() => setDirection("forward")} style={toggleBtn(direction === "forward", true, false)}>FORWARD (cash → income)</button>
+          <button onClick={() => setDirection("reverse")} style={toggleBtn(direction === "reverse", false, true)}>REVERSE (income → cash)</button>
+        </div>
+
+        {/* Inputs */}
+        <div className="no-print" style={{ display: "flex", flexWrap: "wrap", gap: 16, marginBottom: 24, alignItems: "flex-end" }}>
+          {direction === "forward" ? (
+            <div>
+              <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>CASH DOWN ($)</label>
+              <input style={inputStyle} type="number" value={inputs.cashDown} onChange={e => setField("cashDown", e.target.value)} />
+            </div>
+          ) : (
+            <div>
+              <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>TARGET NET TAKE-HOME ($/YR)</label>
+              <input style={inputStyle} type="number" value={inputs.targetTakeHome} onChange={e => setField("targetTakeHome", e.target.value)} />
+            </div>
+          )}
+          <div>
+            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>DOWN %</label>
+            <input style={smallInput} type="number" step="1" value={inputs.downPct} onChange={e => setField("downPct", e.target.value)} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>RATE %</label>
+            <input style={smallInput} type="number" step="0.1" value={inputs.ratePct} onChange={e => setField("ratePct", e.target.value)} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>TERM (YRS)</label>
+            <input style={smallInput} type="number" step="1" value={inputs.termYears} onChange={e => setField("termYears", e.target.value)} />
+          </div>
+          {mode === "business" ? (
+            <div>
+              <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>MULTIPLE (× SDE)</label>
+              <input style={smallInput} type="number" step="0.1" value={inputs.multiple} onChange={e => setField("multiple", e.target.value)} />
+            </div>
+          ) : (
+            <div>
+              <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>CAP RATE %</label>
+              <input style={smallInput} type="number" step="0.1" value={inputs.capPct} onChange={e => setField("capPct", e.target.value)} />
+            </div>
+          )}
+          <div>
+            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>RESERVE % OF CF</label>
+            <input style={smallInput} type="number" step="1" value={inputs.reservePct} onChange={e => setField("reservePct", e.target.value)} />
+          </div>
+          <div>
+            <label style={{ display: "block", fontSize: "11px", color: "#666", marginBottom: 4 }}>EFFECTIVE TAX %</label>
+            <input style={smallInput} type="number" step="1" value={inputs.taxPct} onChange={e => setField("taxPct", e.target.value)} />
+          </div>
+        </div>
+
+        {/* Bottom line box */}
+        <div className="summary-box" style={{ background: "#111", border: "1px solid " + bottomColor, borderRadius: "4px", padding: "16px 20px", marginBottom: 24 }}>
+          <div style={{ fontSize: "11px", color: "#666", letterSpacing: "0.05em", marginBottom: 6 }}>BOTTOM LINE · {modeName}</div>
+          <div style={{ fontSize: "15px", fontWeight: 600, color: bottomColor }}>{bottomLine}</div>
+        </div>
+
+        {/* Deal structure */}
+        <SectionHeader>DEAL STRUCTURE</SectionHeader>
+        <Table
+          rows={[
+            ["Cash down", fmtFull(effectiveCashDown)],
+            ["Loan amount", fmtFull(calc.loan)],
+            ["Purchase price", fmtFull(calc.purchase)],
+            ["Monthly P&I", fmtFull(calc.monthlyPI)],
+            ["Annual debt service", fmtFull(calc.annualDS)],
+          ]}
+          highlight={[2]}
+        />
+
+        {/* Cash flow waterfall */}
+        <SectionHeader>CASH FLOW WATERFALL (ANNUAL)</SectionHeader>
+        <Table
+          headers={["", "Amount"]}
+          rows={[
+            [`${incomeName} (${incomeSubLabel})`, fmtFull(calc.income)],
+            ["− Debt service", "(" + fmtFull(calc.annualDS) + ")"],
+            ["= Cash flow after debt", fmtFull(calc.cfad)],
+            [`− Reserve (${inputs.reservePct}% back into ${mode === "business" ? "business" : "property"})`, "(" + fmtFull(calc.reserveAmt) + ")"],
+            ["= Pre-tax take-home", fmtFull(calc.preTax)],
+            [`− Tax (${inputs.taxPct}% effective)`, "(" + fmtFull(calc.preTax > 0 ? calc.preTax * (inputs.taxPct / 100) : 0) + ")"],
+            ["= NET TAKE-HOME (annual)", fmtFull(calc.afterTax)],
+            ["  Net take-home (monthly)", fmtFull(calc.afterTax / 12)],
+          ]}
+          highlight={[6, 7]}
+        />
+
+        {/* Ratios */}
+        <SectionHeader>DEAL RATIOS</SectionHeader>
+        <Table
+          headers={["Metric", "Value", "Read"]}
+          rows={[
+            ["Cash-on-cash (pre-tax)", pct(calc.coc),
+              calc.coc >= 0.25 ? "Strong" : calc.coc >= 0.10 ? "OK" : calc.coc > 0 ? "Weak" : "Loses money"],
+            ["DSCR (income ÷ debt service)", calc.dscr.toFixed(2) + "×",
+              calc.dscr >= 1.5 ? "Bankable" : calc.dscr >= 1.25 ? "Marginal" : calc.dscr > 0 ? "Fails standard SBA/lender minimum" : "—"],
+            ["Payback on cash (yrs, after-tax)",
+              isFinite(calc.paybackYears) ? calc.paybackYears.toFixed(1) : "∞",
+              calc.paybackYears < 4 ? "Fast" : calc.paybackYears < 7 ? "Normal" : calc.paybackYears < 15 ? "Slow" : "Never at this cash flow"],
+          ]}
+        />
+
+        {/* Warnings and honest caveats */}
+        {dealFails && (
+          <div style={{ marginTop: 20, padding: "12px 16px", background: "#1a0f0f", border: "1px solid #5a2a2a", borderRadius: "4px", fontSize: "12px", color: "#e5b5b5" }}>
+            <div style={{ fontWeight: 600, marginBottom: 6, color: "#e57373" }}>DEAL DOESN'T CLEAR</div>
+            {mode === "realestate"
+              ? "At current rates (~7.5%) versus typical cap rates (6-7%), leveraged residential doesn't cash-flow with 25% down. Options: raise down %, find higher cap-rate deals (secondary markets, value-add), or accept negative near-term cash flow banking on appreciation + principal paydown."
+              : "Debt service exceeds implied SDE. Lower the multiple, raise the down %, or the deal is too expensive at this rate. DSCR below 1.25× typically won't clear SBA underwriting either."}
+          </div>
+        )}
+
+        <SectionHeader>WHAT THIS TOOL DOESN'T MODEL</SectionHeader>
+        <div style={{ fontSize: "12px", color: "#888", lineHeight: 1.7 }}>
+          <div style={{ marginBottom: 6 }}><span style={{ color: "#8bc34a" }}>Working capital.</span> Business acquisitions need 2-3 months of operating expenses in reserve on top of down payment. Deals blow up in month 4 when receivables lag payables.</div>
+          <div style={{ marginBottom: 6 }}><span style={{ color: "#8bc34a" }}>SDE add-backs.</span> Sellers inflate SDE with "one-time" expenses that recur. Discount stated SDE by 10-20% for underwriting.</div>
+          <div style={{ marginBottom: 6 }}><span style={{ color: "#8bc34a" }}>Owner dependency risk.</span> If the business runs on the seller's relationships, expect 20-30% revenue drop year one. Model against that, not trailing twelve.</div>
+          <div style={{ marginBottom: 6 }}><span style={{ color: "#8bc34a" }}>Real estate appreciation & principal paydown.</span> This tool shows spendable cash flow only. Total return in RE is typically 2-3× the cash-on-cash over a hold period from appreciation and mortgage amortization.</div>
+          <div style={{ marginBottom: 6 }}><span style={{ color: "#8bc34a" }}>Tax nuance.</span> Uses a single effective rate. Doesn't model depreciation shelter (RE), QBI deduction (business), interest deductibility, or SE tax. Adjust the tax % input if your actual situation differs.</div>
+          <div><span style={{ color: "#8bc34a" }}>Reserve % is applied to cash-flow-after-debt.</span> Not to gross revenue. It's the fraction of your would-be take-home that stays in the business/property for capex, vacancy, and contingency.</div>
+        </div>
+
+        <div className="disclaimer" style={{ marginTop: 32, fontSize: "10px", color: "#444", lineHeight: 1.6 }}>
+          Rates and assumptions as of August 2026. SBA 7(a) variable rates ~9.5-10% (Prime 6.75% + spread). Investment property 30-yr fixed ~7.25-7.75%. Rates move with Fed policy — verify before making decisions. Not legal, tax, or lending advice.
+        </div>
+      </div>
+    </div>
+  );
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
