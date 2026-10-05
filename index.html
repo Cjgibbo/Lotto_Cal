@@ -66,6 +66,52 @@ const DEFAULTS = {
 const AMI_2026 = 47000;
 const AMI_GROWTH = 0.026;
 
+// ── Progressive tax engine (2026 single filer, estimated) ──
+const FED_BRACKETS = [
+  { limit: 11925, rate: 0.10 },
+  { limit: 48475, rate: 0.12 },
+  { limit: 103350, rate: 0.22 },
+  { limit: 197300, rate: 0.24 },
+  { limit: 250525, rate: 0.32 },
+  { limit: 626350, rate: 0.35 },
+  { limit: Infinity, rate: 0.37 },
+];
+const STD_DEDUCTION = 15700;
+const QD_THRESH_0 = 47025;
+const QD_THRESH_15 = 518900;
+const NIIT_THRESHOLD = 200000;
+
+function calcDistributionTax(ordinaryGross, qualDivGross) {
+  const agi = ordinaryGross + qualDivGross;
+  const taxable = Math.max(0, agi - STD_DEDUCTION);
+  if (taxable <= 0) return { ordTax: 0, qdTax: 0, niit: 0, effOrdRate: 0, effQdRate: 0, taxable: 0, qdIn0: 0, qdIn15: 0 };
+  const qdTaxable = Math.min(qualDivGross, taxable);
+  const ordTaxable = taxable - qdTaxable;
+  // Ordinary income: progressive brackets
+  let ordTax = 0, prev = 0;
+  for (const b of FED_BRACKETS) {
+    if (ordTaxable <= prev) break;
+    ordTax += (Math.min(ordTaxable, b.limit) - prev) * b.rate;
+    prev = b.limit;
+  }
+  // Qualified dividends: 0%/15%/20% based on position in income stack
+  const qdBottom = ordTaxable;
+  const qdIn0 = Math.max(0, Math.min(qdTaxable, Math.max(0, QD_THRESH_0 - qdBottom)));
+  const qdAbove0 = qdTaxable - qdIn0;
+  const qdIn15 = Math.max(0, Math.min(qdAbove0, Math.max(0, QD_THRESH_15 - Math.max(qdBottom, QD_THRESH_0))));
+  const qdIn20 = qdAbove0 - qdIn15;
+  const qdTax = qdIn15 * 0.15 + qdIn20 * 0.20;
+  // NIIT: 3.8% on investment income above $200k MAGI
+  let niitTax = 0;
+  if (agi > NIIT_THRESHOLD) {
+    niitTax = Math.min(agi - NIIT_THRESHOLD, ordinaryGross + qualDivGross) * 0.038;
+  }
+  const totalInv = ordinaryGross + qualDivGross;
+  const effOrdRate = ordinaryGross > 0 ? (ordTax + (niitTax > 0 ? niitTax * (ordinaryGross / totalInv) : 0)) / ordinaryGross : 0;
+  const effQdRate = qualDivGross > 0 ? (qdTax + (niitTax > 0 ? niitTax * (qualDivGross / totalInv) : 0)) / qualDivGross : 0;
+  return { ordTax, qdTax, niit: niitTax, effOrdRate, effQdRate, taxable, ordTaxable, qdTaxable, qdIn0, qdIn15, qdIn20 };
+}
+
 const fmt = (n) => {
   if (Math.abs(n) >= 1e9) return "$" + (n / 1e9).toFixed(2) + "B";
   if (Math.abs(n) >= 1e6) return "$" + (n / 1e6).toFixed(2) + "M";
@@ -175,29 +221,34 @@ function App() {
     const setAside = parseFloat(setAsideInput) || 0;
     const investable = Math.max(net - setAside, 0); // TOTAL deployable across all asset classes
 
+    // Pass 1: compute gross income and appreciation per bucket
     const buckets = allDef.map((a) => {
       const invested = investable * a.effPct;
       const grossIncome = invested * a.yield;
-      let fedTax, stateTax, afterTax;
-      if (a.type === "qualified") {
-        const rate = DEFAULTS.qualDivRate + DEFAULTS.niit;
-        fedTax = grossIncome * rate; stateTax = grossIncome * DEFAULTS.arStateRate; afterTax = grossIncome - fedTax - stateTax;
-      } else if (a.type === "muni") {
-        fedTax = 0; stateTax = 0; afterTax = grossIncome;
-      } else if (a.type === "tbill") {
-        fedTax = grossIncome * DEFAULTS.fedTopRate; stateTax = 0; afterTax = grossIncome - fedTax;
-      } else if (a.type === "realasset") {
-        // Conservative: cash income taxed at ordinary rates. Depreciation/QBI/1031 usually lower this.
-        fedTax = grossIncome * DEFAULTS.fedTopRate; stateTax = grossIncome * DEFAULTS.arStateRate; afterTax = grossIncome - fedTax - stateTax;
-      } else { // inert (personal core) — no income
-        fedTax = 0; stateTax = 0; afterTax = 0;
-      }
-      // Per-bucket appreciation rate: equities use the growth rate; real assets use (total return - cash yield); everything else flat.
       let apprRate;
       if (a.group === "liquid") apprRate = a.grows ? growthRate : 0;
       else if (a.type === "realasset") apprRate = Math.max((a.totalReturn || 0) - (a.yield || 0), 0);
       else apprRate = 0;
-      return { ...a, pct: a.effPct, invested, grossIncome, fedTax, stateTax, afterTax, apprRate };
+      return { ...a, pct: a.effPct, invested, grossIncome, fedTax: 0, stateTax: 0, afterTax: 0, apprRate };
+    });
+    // Pass 2: aggregate by tax type → progressive engine → allocate back
+    const totalQualGross = buckets.filter(b => b.type === "qualified").reduce((s, b) => s + b.grossIncome, 0);
+    const totalOrdGross = buckets.filter(b => b.type === "tbill" || b.type === "realasset").reduce((s, b) => s + b.grossIncome, 0);
+    const distTax = calcDistributionTax(totalOrdGross, totalQualGross);
+    buckets.forEach(b => {
+      if (b.type === "qualified") {
+        b.fedTax = b.grossIncome * distTax.effQdRate;
+        b.stateTax = b.grossIncome * DEFAULTS.arStateRate;
+      } else if (b.type === "muni") {
+        b.fedTax = 0; b.stateTax = 0;
+      } else if (b.type === "tbill") {
+        b.fedTax = b.grossIncome * distTax.effOrdRate;
+        b.stateTax = 0; // T-bills exempt from AR
+      } else if (b.type === "realasset") {
+        b.fedTax = b.grossIncome * distTax.effOrdRate;
+        b.stateTax = b.grossIncome * DEFAULTS.arStateRate;
+      } else { b.fedTax = 0; b.stateTax = 0; }
+      b.afterTax = b.grossIncome - b.fedTax - b.stateTax;
     });
 
     const qualAfterTax = buckets.filter(b => b.type === "qualified").reduce((s, b) => s + b.afterTax, 0);
@@ -249,7 +300,7 @@ function App() {
     const withdrawalPctOfGross = yr1TotalGrossReturn > 0 ? annualWithdrawal / yr1TotalGrossReturn : 0;
     const withdrawalPctOfNet = totalAfterTax > 0 ? annualWithdrawal / totalAfterTax : 0;
     const withdrawalPctOfPrincipal = investable > 0 ? annualWithdrawal / investable : 0;
-    return { isLottery, jackpot, cash, cashRatioActual, ratioFlag, fedWithholding, fedActual, fedOwedAtFiling, arTax, totalTax, net, setAside, investable, buckets, qualAfterTax, muniAfterTax, intAfterTax, realAfterTax, totalAfterTax, grossDivAndInt, effAllocTotal, inertVal, yr1CapitalGrowth, yr1TotalGrossReturn, passiveIncomeAsPercent, startingGrowthPrincipal, startingIncomePool, annualWithdrawal, compoundTable, withdrawalPctOfGross, withdrawalPctOfNet, withdrawalPctOfPrincipal };
+    return { isLottery, jackpot, cash, cashRatioActual, ratioFlag, fedWithholding, fedActual, fedOwedAtFiling, arTax, totalTax, net, setAside, investable, buckets, qualAfterTax, muniAfterTax, intAfterTax, realAfterTax, totalAfterTax, grossDivAndInt, effAllocTotal, inertVal, yr1CapitalGrowth, yr1TotalGrossReturn, passiveIncomeAsPercent, startingGrowthPrincipal, startingIncomePool, annualWithdrawal, compoundTable, withdrawalPctOfGross, withdrawalPctOfNet, withdrawalPctOfPrincipal, distTax };
   }, [mode, jackpotInput, cashInput, useCustomCash, lumpSumInput, withdrawalInput, setAsideInput, classAllocs, liquidAllocs, liquidYields, reCashYield, reTotalReturn, bizCashYield, bizTotalReturn, growthRate]);
 
   const satellites = useMemo(() => {
@@ -404,6 +455,14 @@ function App() {
         <SectionHeader>3. AFTER-TAX INCOME BY BUCKET</SectionHeader>
         <Table headers={["Bucket", "Gross", "Fed Tax", "AR Tax", "After-Tax"]} rows={[...calc.buckets.map(b => [b.label, fmtFull(Math.round(b.grossIncome)), fmtFull(Math.round(b.fedTax)), fmtFull(Math.round(b.stateTax)), fmtFull(Math.round(b.afterTax))]), ["", "", "", "", ""], ["TOTAL", fmtFull(Math.round(calc.grossDivAndInt)), fmtFull(Math.round(calc.buckets.reduce((s, b) => s + b.fedTax, 0))), fmtFull(Math.round(calc.buckets.reduce((s, b) => s + b.stateTax, 0))), fmtFull(Math.round(calc.totalAfterTax))]]} highlight={[calc.buckets.length + 1]} />
 
+        <div style={{ fontSize: "11px", color: "#666", marginTop: 8 }}>
+          Progressive rates (single filer, {fmtFull(STD_DEDUCTION)} std deduction):
+          Eff. federal on ordinary income: {pct(calc.distTax.effOrdRate)} · Eff. federal on qualified divs: {pct(calc.distTax.effQdRate)}
+          {calc.distTax.qdIn0 > 0 && <span> · QD in 0% bracket: {fmtFull(Math.round(calc.distTax.qdIn0))}</span>}
+          {calc.distTax.qdIn15 > 0 && <span> · QD in 15% bracket: {fmtFull(Math.round(calc.distTax.qdIn15))}</span>}
+          {calc.distTax.niit > 0 && <span> · NIIT: {fmtFull(Math.round(calc.distTax.niit))}</span>}
+        </div>
+
         <SectionHeader>4. INCOME SUMMARY (YEAR 1)</SectionHeader>
         <Table rows={[["Qualified dividend income (after-tax)", fmtFull(Math.round(calc.qualAfterTax)) + "/yr", fmtFull(Math.round(calc.qualAfterTax / 12)) + "/mo"], ["Tax-free muni interest", fmtFull(Math.round(calc.muniAfterTax)) + "/yr", fmtFull(Math.round(calc.muniAfterTax / 12)) + "/mo"], ["Interest income — T-bills (after-tax)", fmtFull(Math.round(calc.intAfterTax)) + "/yr", fmtFull(Math.round(calc.intAfterTax / 12)) + "/mo"], ["Real-asset cash income — RE + biz (after-tax)", fmtFull(Math.round(calc.realAfterTax)) + "/yr", fmtFull(Math.round(calc.realAfterTax / 12)) + "/mo"], ["", "", ""], ["TOTAL PASSIVE INCOME (after-tax)", fmtFull(Math.round(calc.totalAfterTax)) + "/yr", fmtFull(Math.round(calc.totalAfterTax / 12)) + "/mo"]]} highlight={[5]} />
         <div className="section-header" style={{ fontSize: "11px", color: "#666", marginTop: 8, marginBottom: 4 }}>YEAR 1 TOTAL RETURN CONTEXT</div>
@@ -472,11 +531,12 @@ function App() {
           <div>• 2026 tax law assumed. AR top rate 3.7% (HB 1001, signed May 6 2026, retroactive to Jan 1).</div>
           <div>• Federal estate/gift exemption $15M/person ($30M married) — OBBBA made permanent Jul 2025.</div>
           <div>• T-bill yield moves with Fed rate — verify if calc is months old.</div>
-          <div>• Qualified dividends taxed at 23.8% fed (20% + 3.8% NIIT) + 3.7% AR.</div>
+          <div>• Lump-sum lottery winnings taxed at top marginal rates (37% fed + 3.7% AR). Annual distribution income taxed progressively.</div>
+          <div>• Qualified dividends: 0% fed up to ~$47k taxable income, 15% to ~$519k, 20% above. NIIT (3.8%) applies only above $200k MAGI. + 3.7% AR.</div>
           <div>• AR-issued municipal bonds: 0% fed + 0% AR (double tax-free). Out-of-state munis lose AR exemption.</div>
           <div>• T-bill interest exempt from AR state tax.</div>
           <div>• Real-asset buckets carry a cash yield (spendable) and a total return; appreciation = total return − cash yield.</div>
-          <div>• Real-asset cash income taxed here at ordinary rates (37% fed + 3.7% AR) as a conservative default — depreciation, QBI, and 1031 typically lower effective RE tax, so real take-home is likely higher.</div>
+          <div>• Real-asset cash income taxed at progressive ordinary rates + 3.7% AR — depreciation, QBI, and 1031 typically lower effective RE tax further.</div>
           <div>• Real-asset defaults (RE ~7.5% total, biz/land ~5.5%) are above current market: NCREIF core RE ran ~4.9% and timberland ~4.9% for the year ending Q1 2026. Higher figures assume leverage/value-add.</div>
           <div>• Personal core (home/cash) held as net worth only — no modeled income or appreciation.</div>
           <div>• Compound growth rate is user-adjustable (default 7%, long-run S&amp;P real avg).</div>
